@@ -1,0 +1,32 @@
+[package]
+name = "overhead-app"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[[bin]]
+name = "overhead"
+path = "src/main.rs"
+
+[dependencies]
+overhead-core.workspace = true
+# Stage 2 (ADS-B matching): public API only.
+overhead-adsb = { path = "../overhead-adsb" }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# Map tiles (OpenStreetMap raster PNGs).
+png = "0.18"
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+gpui = "0.2.2"
+image = { version = "0.25", default-features = false }
+unicode-segmentation = "1"
+log = "0.4"
+# Self-update from GitHub releases (same client as overhead-adsb).
+ureq = "2"
+# Audio playback (listening with a frequency boost): WASAPI on Windows, ALSA on Linux.
+cpal = "0.18"
+
+[build-dependencies]
+winresource = "0.1.34"
+# Pinned in Cargo.lock to 0.2.189 (xattr 0.2.3 breaks with newer).

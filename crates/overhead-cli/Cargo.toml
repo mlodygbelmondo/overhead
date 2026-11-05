@@ -1,0 +1,12 @@
+[package]
+name = "overhead-cli"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+overhead-core.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png"] }

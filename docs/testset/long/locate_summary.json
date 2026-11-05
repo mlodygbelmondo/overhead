@@ -1,0 +1,802 @@
+[
+ {
+  "id": "fs749484",
+  "mode": "day",
+  "wall_s": "140.4",
+  "exit": "0",
+  "truth_hex": [
+   "48462c",
+   "485fcc"
+  ],
+  "search_s": 22.5,
+  "window_h": 24.0,
+  "utc_offsets_h": [
+   2.0
+  ],
+  "flights": 293,
+  "detections_used": 7,
+  "lat": 51.359623948166295,
+  "lon": 4.498165281272012,
+  "err_m": 39252,
+  "score": 3.89,
+  "margin": 0.71,
+  "matched": 1,
+  "start": "2024-07-30T07:48:36.7Z",
+  "flights1": [
+   {
+    "det": 2,
+    "reg": "OO-SCB",
+    "type": "CRUZ",
+    "truth": false,
+    "curve": 3.06
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": null
+ },
+ {
+  "id": "fs749484",
+  "mode": "exact",
+  "wall_s": "60.1",
+  "exit": "0",
+  "truth_hex": [
+   "48462c",
+   "485fcc"
+  ],
+  "search_s": 11.4,
+  "window_h": 0.011111111111111112,
+  "utc_offsets_h": [
+   2.0
+  ],
+  "flights": 210,
+  "detections_used": 7,
+  "lat": 51.62757334275063,
+  "lon": 4.857834416085629,
+  "err_m": 18285,
+  "score": 2.06,
+  "margin": 0.32,
+  "matched": 2,
+  "start": "2024-07-30T11:06:56.1Z",
+  "flights1": [
+   {
+    "det": 3,
+    "reg": "D-604",
+    "type": "H47",
+    "truth": false,
+    "curve": 1.13
+   },
+   {
+    "det": 6,
+    "reg": "D-604",
+    "type": "H47",
+    "truth": false,
+    "curve": 2.0
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": 3,
+  "best_2km": {
+   "rank": 3,
+   "err_m": 758,
+   "score": 1.36,
+   "matched": 2,
+   "truth": 1
+  }
+ },
+ {
+  "id": "fs749484",
+  "mode": "hours",
+  "wall_s": "110.4",
+  "exit": "0",
+  "truth_hex": [
+   "48462c",
+   "485fcc"
+  ],
+  "search_s": 24.0,
+  "window_h": 5.0,
+  "utc_offsets_h": [
+   2.0
+  ],
+  "flights": 271,
+  "detections_used": 7,
+  "lat": 51.37115611268803,
+  "lon": 4.587547261878004,
+  "err_m": 37089,
+  "score": 4.12,
+  "margin": 0.51,
+  "matched": 1,
+  "start": "2024-07-30T12:26:47.3Z",
+  "flights1": [
+   {
+    "det": 2,
+    "reg": "OO-SCC",
+    "type": "CRUZ",
+    "truth": false,
+    "curve": 2.72
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": null
+ },
+ {
+  "id": "fs749484",
+  "mode": "start",
+  "wall_s": "58.7",
+  "exit": "0",
+  "truth_hex": [
+   "48462c",
+   "485fcc"
+  ],
+  "search_s": 9.1,
+  "window_h": 0.1,
+  "utc_offsets_h": [
+   2.0
+  ],
+  "flights": 212,
+  "detections_used": 7,
+  "lat": 51.35100456729886,
+  "lon": 4.4945998947530645,
+  "err_m": 40242,
+  "score": 3.42,
+  "margin": 0.85,
+  "matched": 2,
+  "start": "2024-07-30T11:08:07.3Z",
+  "flights1": [
+   {
+    "det": 2,
+    "reg": "OO-STY",
+    "type": "C172",
+    "truth": false,
+    "curve": 1.69
+   },
+   {
+    "det": 6,
+    "reg": "OO-STY",
+    "type": "C172",
+    "truth": false,
+    "curve": 2.23
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": null
+ },
+ {
+  "id": "fs794275",
+  "mode": "day",
+  "wall_s": "349.8",
+  "exit": "0",
+  "truth_hex": [
+   "4844da",
+   "484674",
+   "4858d1",
+   "4d220e",
+   "51115f"
+  ],
+  "search_s": 52.4,
+  "window_h": 26.0,
+  "utc_offsets_h": [
+   0.0,
+   2.0
+  ],
+  "flights": 243,
+  "detections_used": 7,
+  "lat": 51.433012961656324,
+  "lon": 4.152085676946845,
+  "err_m": 63,
+  "score": 3.35,
+  "margin": 0.61,
+  "matched": 4,
+  "start": "2024-08-18T07:24:14.2Z",
+  "flights1": [
+   {
+    "det": 0,
+    "reg": "9H-WIT",
+    "type": "PC12",
+    "truth": true,
+    "curve": 0.94
+   },
+   {
+    "det": 4,
+    "reg": "ES-ILM",
+    "type": "DA62",
+    "truth": true,
+    "curve": 1.0
+   },
+   {
+    "det": 5,
+    "reg": "PH-HJG",
+    "type": "TB20",
+    "truth": true,
+    "curve": 0.98
+   },
+   {
+    "det": 6,
+    "reg": "PH-ZYS",
+    "type": "DA50",
+    "truth": true,
+    "curve": 0.81
+   }
+  ],
+  "truth_in_1": 4,
+  "rank_2km": 1,
+  "best_2km": {
+   "rank": 1,
+   "err_m": 63,
+   "score": 3.35,
+   "matched": 4,
+   "truth": 4
+  }
+ },
+ {
+  "id": "fs794275",
+  "mode": "exact",
+  "wall_s": "215.9",
+  "exit": "0",
+  "truth_hex": [
+   "4844da",
+   "484674",
+   "4858d1",
+   "4d220e",
+   "51115f"
+  ],
+  "search_s": 28.5,
+  "window_h": 0.011111111111111112,
+  "utc_offsets_h": [
+   0.0
+  ],
+  "flights": 119,
+  "detections_used": 7,
+  "lat": 51.433020936057865,
+  "lon": 4.15209905772066,
+  "err_m": 63,
+  "score": 3.35,
+  "margin": 2.3,
+  "matched": 4,
+  "start": "2024-08-18T07:24:14.2Z",
+  "flights1": [
+   {
+    "det": 0,
+    "reg": "9H-WIT",
+    "type": "PC12",
+    "truth": true,
+    "curve": 0.94
+   },
+   {
+    "det": 4,
+    "reg": "ES-ILM",
+    "type": "DA62",
+    "truth": true,
+    "curve": 1.0
+   },
+   {
+    "det": 5,
+    "reg": "PH-HJG",
+    "type": "TB20",
+    "truth": true,
+    "curve": 0.98
+   },
+   {
+    "det": 6,
+    "reg": "PH-ZYS",
+    "type": "DA50",
+    "truth": true,
+    "curve": 0.81
+   }
+  ],
+  "truth_in_1": 4,
+  "rank_2km": 1,
+  "best_2km": {
+   "rank": 1,
+   "err_m": 63,
+   "score": 3.35,
+   "matched": 4,
+   "truth": 4
+  }
+ },
+ {
+  "id": "fs794275",
+  "mode": "hours",
+  "wall_s": "128.6",
+  "exit": "0",
+  "truth_hex": [
+   "4844da",
+   "484674",
+   "4858d1",
+   "4d220e",
+   "51115f"
+  ],
+  "search_s": 22.7,
+  "window_h": 7.0,
+  "utc_offsets_h": [
+   0.0,
+   2.0
+  ],
+  "flights": 225,
+  "detections_used": 7,
+  "lat": 51.720774176451975,
+  "lon": 4.08584233138746,
+  "err_m": 32372,
+  "score": 3.76,
+  "margin": 0.4,
+  "matched": 1,
+  "start": "2024-08-18T07:27:35.0Z",
+  "flights1": [
+   {
+    "det": 0,
+    "reg": "PH-VSQ",
+    "type": "DR40",
+    "truth": false,
+    "curve": 2.52
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": 2,
+  "best_2km": {
+   "rank": 2,
+   "err_m": 63,
+   "score": 3.35,
+   "matched": 4,
+   "truth": 4
+  }
+ },
+ {
+  "id": "fs794275",
+  "mode": "start",
+  "wall_s": "274.8",
+  "exit": "0",
+  "truth_hex": [
+   "4844da",
+   "484674",
+   "4858d1",
+   "4d220e",
+   "51115f"
+  ],
+  "search_s": 37.5,
+  "window_h": 0.1,
+  "utc_offsets_h": [
+   0.0
+  ],
+  "flights": 120,
+  "detections_used": 7,
+  "lat": 51.433012961656324,
+  "lon": 4.152085676946845,
+  "err_m": 63,
+  "score": 3.35,
+  "margin": 1.6,
+  "matched": 4,
+  "start": "2024-08-18T07:24:14.2Z",
+  "flights1": [
+   {
+    "det": 0,
+    "reg": "9H-WIT",
+    "type": "PC12",
+    "truth": true,
+    "curve": 0.94
+   },
+   {
+    "det": 4,
+    "reg": "ES-ILM",
+    "type": "DA62",
+    "truth": true,
+    "curve": 1.0
+   },
+   {
+    "det": 5,
+    "reg": "PH-HJG",
+    "type": "TB20",
+    "truth": true,
+    "curve": 0.98
+   },
+   {
+    "det": 6,
+    "reg": "PH-ZYS",
+    "type": "DA50",
+    "truth": true,
+    "curve": 0.81
+   }
+  ],
+  "truth_in_1": 4,
+  "rank_2km": 1,
+  "best_2km": {
+   "rank": 1,
+   "err_m": 63,
+   "score": 3.35,
+   "matched": 4,
+   "truth": 4
+  }
+ },
+ {
+  "id": "fs801327",
+  "mode": "both",
+  "wall_s": "68.5",
+  "exit": "0",
+  "truth_hex": [
+   "480c23",
+   "480c28",
+   "484a91",
+   "484bcd"
+  ],
+  "search_s": 6.8,
+  "window_h": 0.6666666666666666,
+  "utc_offsets_h": [
+   2.0
+  ],
+  "flights": 100,
+  "detections_used": 10,
+  "lat": 51.63603817856985,
+  "lon": 4.973434258154632,
+  "err_m": 19931,
+  "score": 2.24,
+  "margin": 0.36,
+  "matched": 1,
+  "start": "2025-04-23T07:24:08.7Z",
+  "flights1": [
+   {
+    "det": 4,
+    "reg": "S-440",
+    "type": "AS3B",
+    "truth": false,
+    "curve": 1.68
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": 4,
+  "best_2km": {
+   "rank": 4,
+   "err_m": 832,
+   "score": 1.64,
+   "matched": 3,
+   "truth": 3
+  }
+ },
+ {
+  "id": "fs801327",
+  "mode": "day",
+  "wall_s": "186.4",
+  "exit": "0",
+  "truth_hex": [
+   "480c23",
+   "480c28",
+   "484a91",
+   "484bcd"
+  ],
+  "search_s": 18.5,
+  "window_h": 24.0,
+  "utc_offsets_h": [
+   2.0
+  ],
+  "flights": 174,
+  "detections_used": 10,
+  "lat": 51.32206942068217,
+  "lon": 5.936271643343786,
+  "err_m": 95196,
+  "score": 2.01,
+  "margin": 0.14,
+  "matched": 2,
+  "start": "2025-04-23T08:34:44.7Z",
+  "flights1": [
+   {
+    "det": 4,
+    "reg": "PH-KDF",
+    "type": "C150",
+    "truth": false,
+    "curve": 1.49
+   },
+   {
+    "det": 6,
+    "reg": "PH-KDF",
+    "type": "C150",
+    "truth": false,
+    "curve": 0.66
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": null
+ },
+ {
+  "id": "fs801327",
+  "mode": "exact",
+  "wall_s": "76.1",
+  "exit": "0",
+  "truth_hex": [
+   "480c23",
+   "480c28",
+   "484a91",
+   "484bcd"
+  ],
+  "search_s": 6.6,
+  "window_h": 0.011111111111111112,
+  "utc_offsets_h": [
+   2.0
+  ],
+  "flights": 85,
+  "detections_used": 10,
+  "lat": 51.713986929632945,
+  "lon": 4.723779067156599,
+  "err_m": 686,
+  "score": 1.5,
+  "margin": 0.28,
+  "matched": 3,
+  "start": "2025-04-23T07:29:03.9Z",
+  "flights1": [
+   {
+    "det": 1,
+    "reg": "PH-NSC",
+    "type": "DR40",
+    "truth": true,
+    "curve": 1.45
+   },
+   {
+    "det": 6,
+    "reg": "L-03",
+    "type": "PC7",
+    "truth": true,
+    "curve": 0.8
+   },
+   {
+    "det": 9,
+    "reg": "PH-PXA",
+    "type": "EC35",
+    "truth": true,
+    "curve": 0.87
+   }
+  ],
+  "truth_in_1": 3,
+  "rank_2km": 1,
+  "best_2km": {
+   "rank": 1,
+   "err_m": 686,
+   "score": 1.5,
+   "matched": 3,
+   "truth": 3
+  }
+ },
+ {
+  "id": "fs801327",
+  "mode": "hours",
+  "wall_s": "88.9",
+  "exit": "0",
+  "truth_hex": [
+   "480c23",
+   "480c28",
+   "484a91",
+   "484bcd"
+  ],
+  "search_s": 12.8,
+  "window_h": 5.0,
+  "utc_offsets_h": [
+   2.0
+  ],
+  "flights": 124,
+  "detections_used": 10,
+  "lat": 51.32206942068217,
+  "lon": 5.936271643343786,
+  "err_m": 95196,
+  "score": 2.01,
+  "margin": 0.14,
+  "matched": 2,
+  "start": "2025-04-23T08:34:44.7Z",
+  "flights1": [
+   {
+    "det": 4,
+    "reg": "PH-KDF",
+    "type": "C150",
+    "truth": false,
+    "curve": 1.49
+   },
+   {
+    "det": 6,
+    "reg": "PH-KDF",
+    "type": "C150",
+    "truth": false,
+    "curve": 0.66
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": null
+ },
+ {
+  "id": "fs801327",
+  "mode": "start",
+  "wall_s": "88.6",
+  "exit": "0",
+  "truth_hex": [
+   "480c23",
+   "480c28",
+   "484a91",
+   "484bcd"
+  ],
+  "search_s": 5.7,
+  "window_h": 0.1,
+  "utc_offsets_h": [
+   2.0
+  ],
+  "flights": 85,
+  "detections_used": 10,
+  "lat": 51.64031166459365,
+  "lon": 4.977394559253191,
+  "err_m": 19963,
+  "score": 2.36,
+  "margin": 0.55,
+  "matched": 1,
+  "start": "2025-04-23T07:24:14.7Z",
+  "flights1": [
+   {
+    "det": 4,
+    "reg": "S-440",
+    "type": "AS3B",
+    "truth": false,
+    "curve": 1.75
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": 7,
+  "best_2km": {
+   "rank": 7,
+   "err_m": 832,
+   "score": 1.64,
+   "matched": 3,
+   "truth": 3
+  }
+ },
+ {
+  "id": "fs864478",
+  "mode": "day",
+  "wall_s": "188.3",
+  "exit": "0",
+  "truth_hex": [
+   "3d1803",
+   "44d9b8",
+   "484571"
+  ],
+  "search_s": 17.7,
+  "window_h": 26.0,
+  "utc_offsets_h": [
+   0.0,
+   2.0
+  ],
+  "flights": 278,
+  "detections_used": 7,
+  "lat": 51.676341597699654,
+  "lon": 4.1637021602632664,
+  "err_m": 48073,
+  "score": 0.99,
+  "margin": 0.0,
+  "matched": 2,
+  "start": "2026-07-24T10:37:07.8Z",
+  "flights1": [
+   {
+    "det": 1,
+    "reg": "PH-BAT",
+    "type": "A210",
+    "truth": false,
+    "curve": 1.46
+   },
+   {
+    "det": 5,
+    "reg": "PH-BAR",
+    "type": "TWEN",
+    "truth": false,
+    "curve": 0.62
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": null
+ },
+ {
+  "id": "fs864478",
+  "mode": "exact",
+  "wall_s": "35.1",
+  "exit": "0",
+  "truth_hex": [
+   "3d1803",
+   "44d9b8",
+   "484571"
+  ],
+  "search_s": 2.5,
+  "window_h": 0.011111111111111112,
+  "utc_offsets_h": [
+   0.0
+  ],
+  "flights": 179,
+  "detections_used": 7,
+  "lat": 51.651382778659425,
+  "lon": 3.6651533105600778,
+  "err_m": 24213,
+  "score": 0.69,
+  "margin": 0.02,
+  "matched": 1,
+  "start": "2026-07-24T12:56:09.0Z",
+  "flights1": [
+   {
+    "det": 1,
+    "reg": "DMYKR",
+    "type": null,
+    "truth": false,
+    "curve": 1.22
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": 3,
+  "best_2km": {
+   "rank": 3,
+   "err_m": 18,
+   "score": 0.51,
+   "matched": 2,
+   "truth": 2
+  }
+ },
+ {
+  "id": "fs864478",
+  "mode": "hours",
+  "wall_s": "53.5",
+  "exit": "0",
+  "truth_hex": [
+   "3d1803",
+   "44d9b8",
+   "484571"
+  ],
+  "search_s": 9.6,
+  "window_h": 7.0,
+  "utc_offsets_h": [
+   0.0,
+   2.0
+  ],
+  "flights": 242,
+  "detections_used": 7,
+  "lat": 51.792120604104426,
+  "lon": 4.259105335951445,
+  "err_m": 61012,
+  "score": 1.05,
+  "margin": 0.06,
+  "matched": 1,
+  "start": "2026-07-24T14:26:10.7Z",
+  "flights1": [
+   {
+    "det": 1,
+    "reg": "PH-BAN",
+    "type": "A210",
+    "truth": false,
+    "curve": 1.6
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": null
+ },
+ {
+  "id": "fs864478",
+  "mode": "start",
+  "wall_s": "35.7",
+  "exit": "0",
+  "truth_hex": [
+   "3d1803",
+   "44d9b8",
+   "484571"
+  ],
+  "search_s": 3.0,
+  "window_h": 0.1,
+  "utc_offsets_h": [
+   0.0
+  ],
+  "flights": 179,
+  "detections_used": 7,
+  "lat": 51.56408952219389,
+  "lon": 3.6613179664203095,
+  "err_m": 14870,
+  "score": 1.14,
+  "margin": 0.18,
+  "matched": 1,
+  "start": "2026-07-24T12:52:42.2Z",
+  "flights1": [
+   {
+    "det": 1,
+    "reg": "DMYKR",
+    "type": null,
+    "truth": false,
+    "curve": 1.73
+   }
+  ],
+  "truth_in_1": 0,
+  "rank_2km": null
+ }
+]

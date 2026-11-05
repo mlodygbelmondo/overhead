@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Overhead
+Comment=Find where a recording was made from the aircraft heard in it
+Exec=overhead %f
+Icon=overhead
+Terminal=false
+Categories=AudioVideo;Audio;
+MimeType=audio/mpeg;audio/x-wav;audio/flac;audio/ogg;audio/mp4;
+StartupWMClass=overhead

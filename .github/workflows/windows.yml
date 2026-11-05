@@ -1,0 +1,137 @@
+name: windows
+
+# Every push to main builds the Windows exe and publishes it as release
+# `build-<run number>` (prerelease); the app updates itself from these (see
+# docs/technical.md "Updates"). Other releases (e.g. `preview-1`) are never touched.
+#
+# A run started by hand (workflow_dispatch, any branch) also runs the window
+# smoke test (job ui-smoke): the exe of this run on a real Windows desktop,
+# driven with real mouse input (scripts/windows-ui-smoke/smoke.py). Its
+# screenshots and window rectangles are the "windows-ui-smoke" artifact.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      OVERHEAD_BUILD: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Only main writes the cache; dispatch runs on other branches reuse it.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Build number
+        shell: bash
+        run: echo "OVERHEAD_COMMIT=${GITHUB_SHA::7}" >> "$GITHUB_ENV"
+      - name: Build
+        run: cargo build --release --locked -p overhead-app
+      - name: Check the build number
+        shell: bash
+        run: |
+          v=$(target/release/overhead.exe --version)
+          echo "$v"
+          [[ "$v" == "overhead build ${OVERHEAD_BUILD} (${OVERHEAD_COMMIT})" ]]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: overhead-windows
+          path: target/release/overhead.exe
+      - name: Publish release build-${{ github.run_number }}
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp target/release/overhead.exe out/
+          date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          printf '{"build": %s, "commit": "%s", "date": "%s"}\n' "$OVERHEAD_BUILD" "$OVERHEAD_COMMIT" "$date" > out/latest.json
+          cat out/latest.json
+          if gh release view "build-${OVERHEAD_BUILD}" > /dev/null 2>&1; then
+            # "Re-run jobs" keeps the run number: replace the assets.
+            gh release upload "build-${OVERHEAD_BUILD}" out/overhead.exe out/latest.json --clobber
+            exit 0
+          fi
+          gh release create "build-${OVERHEAD_BUILD}" out/overhead.exe out/latest.json \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Build ${OVERHEAD_BUILD} (${OVERHEAD_COMMIT})" \
+            --notes "Windows build ${OVERHEAD_BUILD} of main at ${OVERHEAD_COMMIT}, ${date}. The app installs it by itself."
+      - name: Prune old build releases (keep the last 10)
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release list --limit 200 --json tagName --jq '.[].tagName' \
+            | { grep -E '^build-[0-9]+$' || true; } \
+            | sort -t- -k2 -n -r | tail -n +11 \
+            | while read -r tag; do
+                echo "deleting $tag"
+                gh release delete "$tag" --yes --cleanup-tag
+              done
+
+  ui-smoke:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/windows-ui-smoke
+      - uses: actions/download-artifact@v4
+        with:
+          name: overhead-windows
+          path: app
+      - name: Screen
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          try { Set-DisplayResolution -Width 1920 -Height 1080 -Force -ErrorAction Stop; "resolution set to 1920x1080" }
+          catch { "Set-DisplayResolution failed: $_" }
+          Add-Type -AssemblyName System.Windows.Forms
+          [System.Windows.Forms.Screen]::AllScreens | Format-List
+          Get-CimInstance Win32_VideoController | Format-List Name, VideoModeDescription, DriverVersion
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Pillow (screenshots)
+        run: python -m pip install --quiet pillow
+      - name: Window smoke test
+        shell: pwsh
+        env:
+          APPDATA: ${{ runner.temp }}\appdata
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
+          python scripts/windows-ui-smoke/smoke.py app/overhead.exe smoke-out
+      - name: Again without DirectComposition (if the first try failed)
+        if: failure()
+        shell: pwsh
+        env:
+          APPDATA: ${{ runner.temp }}\appdata2
+          GPUI_DISABLE_DIRECT_COMPOSITION: "1"
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:APPDATA | Out-Null
+          python scripts/windows-ui-smoke/smoke.py app/overhead.exe smoke-out-nodcomp
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-ui-smoke
+          path: |
+            smoke-out
+            smoke-out-nodcomp
+          if-no-files-found: warn

@@ -1,0 +1,28 @@
+[package]
+name = "overhead-adsb"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Stage 2: match Doppler fly-by detections against historical ADS-B (adsb.lol) to geolocate a recording"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "overhead-adsb"
+path = "src/main.rs"
+
+[dependencies]
+overhead-core.workspace = true
+overhead-bench = { path = "../overhead-bench" }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }
+flate2 = "1"
+rayon = "1"
+ureq = "2"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+chrono-tz = "0.10.4"
+tzf-rs = { version = "2.3.0", default-features = false, features = ["bundled"] }
+png = "0.18"

@@ -1,0 +1,50 @@
+{
+ "recordist": "klankbeeld",
+ "licence": "CC BY 4.0",
+ "licence_url": "https://creativecommons.org/licenses/by/4.0/",
+ "source": "Freesound (HQ MP3 preview; the original needs a login)",
+ "timezone": "Europe/Amsterdam",
+ "country": "Netherlands",
+ "audio_file": "audio.mp3",
+ "id": "fs796004",
+ "short": "Moerputten, Vlijmen ('s-Hertogenbosch)",
+ "source_url": "https://freesound.org/people/klankbeeld/sounds/796004/",
+ "title": "swamp meadow Vlijmens Ven Moerputten Netherlands 102 PM 250327_1064",
+ "lat": 51.68882,
+ "lon": 5.23562,
+ "location_uncertainty_m": 50,
+ "location_note": "Recordist's GPS in the description (51.68882 5.23562), same as the map pin.",
+ "place": "Moerputten, Gement polder, south of the Venkantbrug, Vlijmen",
+ "region": "Noord-Brabant",
+ "local_start": "2025-03-27T13:02:00",
+ "start_uncertainty_s": 180,
+ "time_note": "Date conflict: title '102 PM 250327' (27 March), description 'March 17th 2025, 1:02 PM'. ADS-B does not settle it (see adsb_note); 13:02 local, minute precision.",
+ "alt_dates": [
+  "2025-03-17"
+ ],
+ "audible": "Marsh, moor frogs, birds, distant highway; aircraft not annotated in the description.",
+ "duration_s": 3246.0,
+ "status": "near_miss",
+ "adsb_note": "Does not count: a PA-31T (PH-SVY) flew survey lines over the site (8 passes 0.9-3.4 km in the window on the 27th), but stage 1 finds none of them; 1 detection pairs (an AH-64, 5.2 km). On the 17th 2 detections pair with an R44 (OO-SAF). The date stays unresolved.",
+ "utc_start": "2025-03-27T12:02:00Z",
+ "utc_offset": "+0100",
+ "elev_m": 3,
+ "geoid_m": 44.1,
+ "adsb_start_utc": "2025-03-27T11:59:00Z",
+ "adsb_matches": [
+  {
+   "hex": "480889",
+   "reg": "Q-40",
+   "type": "H64",
+   "class": "rotor",
+   "dt_s": 3.9,
+   "slant_m": 5223,
+   "horiz_m": 5223,
+   "agl_m": 14,
+   "gs_kt": 124.1,
+   "heard_t": "2025-03-27T12:51:19Z",
+   "det": 4,
+   "tc": 3142.9
+  }
+ ]
+}

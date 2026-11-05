@@ -1,0 +1,21 @@
+[package]
+name = "overhead-bench"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "Synthetic fly-by benchmark for overhead-core's automatic detector"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "overhead-bench"
+path = "src/main.rs"
+
+[dependencies]
+overhead-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }
+realfft = "3"

@@ -1,0 +1,11 @@
+[package]
+name = "overhead-core"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+realfft = "3"
+serde = { workspace = true, features = ["derive"] }
+symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "flac", "mp3", "aac", "isomp4", "vorbis", "ogg", "alac", "adpcm", "mkv"] }
