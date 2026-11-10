@@ -68,6 +68,17 @@ tracks. The full results are in [docs/evidence.md](docs/evidence.md).
   says so and shows the whole area it could be.
 - **On synthetic recordings,** 28 of 33 land within 500 m and 30 within 2 km.
 
+These figures were measured before the matcher changes of November 2026,
+which made Overhead find the recording of the video it is modelled on (from
+the audio and the day alone, 540 m from the video's point). The same runs
+again with the new matcher, on 49 real runs and 16 synthetic cases, are in
+the first section of [docs/evidence.md](docs/evidence.md): the Oosterschelde
+recording is placed 66 m off with a larger margin, 9 of the 49 real runs land
+within 2 km where 13 did (the lost ones had been won by a hair), the
+synthetic cases improve (10 of 16 within 500 m where 6 did), and still no
+wrong answer is reported as certain. The 33-case synthetic set has not been
+run again.
+
 It works best:
 
 - with **light aircraft and helicopters** (propeller sound). Jets are not
