@@ -974,8 +974,26 @@ unsafe fn heard_x4(lanes: &mut [Lane], o: V3, up: V3, sound: &Sound) -> [Heard; 
 }
 
 /// Doppler factor `f_heard / f_rest` for a [`Heard`] state.
+///
+/// The radial velocity is taken along the straight line from the aircraft
+/// to the observer, and the speed of sound is the mean along the path
+/// ([`Sound::ray_c`]), not the one at the aircraft. The shift of a moving
+/// source is `v · n / c` at the source, with `n` the direction in which the
+/// ray that reaches the observer leaves it. In air that warms towards the
+/// ground that ray is an arc, steeper at the aircraft than the straight
+/// line; its horizontal slowness `cos θ / c` is the same all along it
+/// (Snell), and for an arc the chord's direction is the mean of the
+/// directions at its ends, which gives `cos θ_chord / c_mean` for it. With
+/// the sound speed at the aircraft (as it was) the swing of an aircraft at
+/// 5.5 km came out 3.3 % too large, a fit wanted a ground speed of sound of
+/// 355 m/s to undo it, and aircraft at different heights could not be
+/// fitted with one. (For a climb or descent rate the vertical slowness at
+/// the source would be the right one; at a few m/s the difference is
+/// nothing.) `OVERHEAD_SOURCE_C=1` uses the speed at the aircraft, for
+/// comparison.
 pub fn doppler_factor(h: &Heard, sound: &Sound) -> f64 {
-    let c = sound.source_c(h.dz);
+    static AT_SOURCE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let c = if *AT_SOURCE.get_or_init(|| std::env::var_os("OVERHEAD_SOURCE_C").is_some()) { sound.source_c(h.dz) } else { sound.ray_c(h.dz) };
     c / (c + h.v_radial)
 }
 

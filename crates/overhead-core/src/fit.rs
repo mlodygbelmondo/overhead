@@ -93,31 +93,226 @@ pub struct ScoreMap {
     pub spec: Spectrogram,
     /// Expected score of a curve through pure noise.
     pub baseline: f64,
+    /// Cells set to the baseline because a level tone ran through them
+    /// ([`region_score_map`]); 0 for [`ScoreMap::new`].
+    pub level_cells: usize,
+}
+
+/// Robust noise sigma of a whitened map (dB) from the median absolute
+/// deviation. Digital silence whitens to exact zeros; it must not shrink it.
+fn noise_sigma(spec: &Spectrogram) -> f32 {
+    let mut abs: Vec<f32> =
+        spec.db.iter().step_by((spec.db.len() / 100_000).max(1)).map(|v| v.abs()).filter(|v| *v > 1e-6).collect();
+    (median(&mut abs) * 1.4826).max(1e-3)
+}
+
+/// Level tones of a whitened map (not clipped) as `(column, frequency Hz)`
+/// cells, from its peaks of at least `peak_min`: see [`region_score_map`].
+///
+/// Spectral peaks are linked from column to column into lines (a line may
+/// wander: each peak within `LEVEL_LINK_HZ` of the mean of the line's last
+/// few). A stretch of a line is level where, over a window of `LEVEL_WIN_S`
+/// around it, the line's frequency changes by less than
+/// `LEVEL_MAX_REL_SLOPE` of itself per second
+/// (the median of the window's last third against that of its first third,
+/// so a tone that wobbles by a few tenths of a hertz is still level, and a
+/// line that falls steadily is not).
+fn level_tones(spec: &Spectrogram, peak_min: f32) -> Vec<(usize, f64)> {
+    struct Line {
+        /// `(column, frequency)`, columns rising.
+        pts: Vec<(usize, f64)>,
+        /// Mean frequency of the last `LEVEL_RECENT` points.
+        recent: f64,
+    }
+    let (rows, cols) = (spec.rows, spec.cols);
+    let (df, dt, f_min) = (spec.df, spec.dt, spec.f_min);
+    let half = ((0.5 * LEVEL_WIN_S / dt).round() as usize).max(2);
+    if rows < 5 || cols < 2 * half + 1 {
+        return Vec::new();
+    }
+    let link = LEVEL_LINK_HZ.max(LEVEL_LINK_BINS * df);
+    let gap_cols = ((LEVEL_GAP_S / dt).round() as usize).max(1);
+    let mut active: Vec<Line> = Vec::new();
+    let mut done: Vec<Line> = Vec::new();
+    let mut peaks: Vec<(f64, bool)> = Vec::new();
+    for col in 0..cols {
+        let column = spec.column(col);
+        peaks.clear();
+        for r in 0..rows {
+            let v = column[r];
+            let below = if r > 0 { column[r - 1] } else { f32::NEG_INFINITY };
+            let above = if r + 1 < rows { column[r + 1] } else { f32::NEG_INFINITY };
+            if v >= peak_min && v >= below && v > above {
+                let offset = if below.is_finite() && above.is_finite() {
+                    let (a, b, c) = (below as f64, v as f64, above as f64);
+                    let denom = a - 2.0 * b + c;
+                    if denom.abs() > 1e-9 { (0.5 * (a - c) / denom).clamp(-0.5, 0.5) } else { 0.0 }
+                } else {
+                    0.0
+                };
+                peaks.push((f_min + (r as f64 + offset) * df, false));
+            }
+        }
+        let mut k = 0;
+        while k < active.len() {
+            let line = &mut active[k];
+            let nearest = peaks
+                .iter_mut()
+                .filter(|p| !p.1 && (p.0 - line.recent).abs() <= link)
+                .min_by(|a, b| (a.0 - line.recent).abs().total_cmp(&(b.0 - line.recent).abs()));
+            if let Some(p) = nearest {
+                p.1 = true;
+                line.pts.push((col, p.0));
+                let tail = &line.pts[line.pts.len().saturating_sub(LEVEL_RECENT)..];
+                line.recent = tail.iter().map(|q| q.1).sum::<f64>() / tail.len() as f64;
+                k += 1;
+            } else if col - line.pts[line.pts.len() - 1].0 > gap_cols {
+                done.push(active.swap_remove(k));
+            } else {
+                k += 1;
+            }
+        }
+        for p in peaks.iter().filter(|p| !p.1) {
+            active.push(Line { pts: vec![(col, p.0)], recent: p.0 });
+        }
+    }
+    done.extend(active);
+    let debug = std::env::var_os("OVERHEAD_DEBUG_LEVEL").is_some();
+    let mut out: Vec<(usize, f64)> = Vec::new();
+    // level stretches: (frequency, first column, last column)
+    let mut runs: Vec<(f64, usize, usize)> = Vec::new();
+    let mut buf: Vec<f64> = Vec::new();
+    let median_of = |v: &mut Vec<f64>| -> f64 {
+        v.sort_by(f64::total_cmp);
+        v[v.len() / 2]
+    };
+    // the window's first and last thirds are compared; their centres lie this far apart
+    let third = (2 * half + 1) / 3;
+    let lever_s = (2 * half + 1 - third) as f64 * dt;
+    for line in &done {
+        let (first, last) = (line.pts[0].0, line.pts[line.pts.len() - 1].0);
+        if last - first < 2 * half {
+            continue;
+        }
+        let mut level: Vec<Option<f64>> = vec![None; last - first + 1];
+        // the window as indices into `pts` (both ends move forward with the centre)
+        let (mut lo, mut hi) = (0usize, 0usize);
+        // (a level window marks all its columns, so the centres need not be
+        // every column: every eighth of a window, and the last one)
+        let stride = (half / 4).max(1);
+        let centres = (first + half..=last - half).step_by(stride).chain(std::iter::once(last - half));
+        for centre in centres {
+            let (w0, w1) = (centre - half, centre + half);
+            while line.pts[lo].0 < w0 {
+                lo += 1;
+            }
+            while hi < line.pts.len() && line.pts[hi].0 <= w1 {
+                hi += 1;
+            }
+            let window = &line.pts[lo..hi];
+            if (window.len() as f64) < LEVEL_MIN_FILL * (2 * half + 1) as f64 {
+                continue;
+            }
+            buf.clear();
+            buf.extend(window.iter().filter(|q| q.0 < w0 + third).map(|q| q.1));
+            if buf.len() < 3 {
+                continue;
+            }
+            let early = median_of(&mut buf);
+            buf.clear();
+            buf.extend(window.iter().filter(|q| q.0 > w1 - third).map(|q| q.1));
+            if buf.len() < 3 {
+                continue;
+            }
+            let late = median_of(&mut buf);
+            if (late - early).abs() > LEVEL_MAX_REL_SLOPE * 0.5 * (late + early) * lever_s {
+                continue;
+            }
+            buf.clear();
+            buf.extend(window.iter().map(|q| q.1));
+            let f = median_of(&mut buf);
+            for slot in &mut level[w0 - first..=w1 - first] {
+                slot.get_or_insert(f);
+            }
+        }
+        if debug {
+            let n = level.iter().filter(|l| l.is_some()).count();
+            if n > 0 {
+                let f = level.iter().flatten().sum::<f64>() / n as f64;
+                eprintln!("[level] {f:.2} Hz: {:.1} s level of a line {:.1}..{:.1} s", n as f64 * dt, spec.col_time(first), spec.col_time(last));
+            }
+        }
+        // (runs of level columns, for the pieces that belong to them)
+        let mut i = 0;
+        while i < level.len() {
+            let Some(f) = level[i] else {
+                i += 1;
+                continue;
+            };
+            let start = i;
+            while i < level.len() && level[i].is_some() {
+                i += 1;
+            }
+            runs.push((f, first + start, first + i - 1));
+        }
+        out.extend(level.iter().enumerate().filter_map(|(i, l)| l.map(|f| (first + i, f))));
+    }
+    // A tone is often tracked in pieces (it flickers, or wobbles past the
+    // linking tolerance), and a piece shorter than the window cannot be
+    // judged on its own: a piece that stays at a level tone's frequency and
+    // begins or ends within a window's length of it is part of that tone.
+    let reach = 2 * half;
+    for line in &done {
+        let (first, last) = (line.pts[0].0, line.pts[line.pts.len() - 1].0);
+        let tone = runs.iter().find(|&&(f, a, b)| {
+            first <= b + reach && last + reach >= a && line.pts.iter().all(|q| (q.1 - f).abs() <= 1.5 * link)
+        });
+        if let Some(&(f, ..)) = tone {
+            out.extend((first..=last).map(|col| (col, f)));
+        }
+    }
+    out
 }
 
 const Z_MAX: f32 = 6.0;
+/// Level tones ([`level_tones`]): peaks of at least `LEVEL_PEAK_Z` noise
+/// sigmas, linked within `LEVEL_LINK_HZ` (or `LEVEL_LINK_BINS` bins, if
+/// wider) of the mean of the line's last `LEVEL_RECENT` points, over gaps of
+/// at most `LEVEL_GAP_S`; level where the line changes by less than
+/// `LEVEL_MAX_REL_SLOPE` of its frequency per second (0.04 Hz/s at 100 Hz)
+/// over a window of `LEVEL_WIN_S` that has a peak in at least
+/// `LEVEL_MIN_FILL` of its columns. The limit is relative, as the Doppler
+/// shift is: every line of one fly-by then leaves the tones' reach at the
+/// same time, the fundamental with its harmonics.
+const LEVEL_PEAK_Z: f32 = 2.0;
+const LEVEL_LINK_HZ: f64 = 0.75;
+const LEVEL_LINK_BINS: f64 = 0.6;
+const LEVEL_RECENT: usize = 8;
+const LEVEL_GAP_S: f64 = 2.0;
+const LEVEL_WIN_S: f64 = 20.0;
+const LEVEL_MAX_REL_SLOPE: f64 = 4e-4;
+const LEVEL_MIN_FILL: f64 = 0.5;
 /// Fraction of the largest peak offsets ignored by `transition_quality`.
 const RMS_TRIM: f64 = 0.15;
 /// Cost (in z units) of a one-bin frequency rise in the ridge tracker.
 const RISE_PENALTY: f64 = 1.0;
 
 impl ScoreMap {
-    pub fn new(mut spec: Spectrogram) -> Self {
+    pub fn new(spec: Spectrogram) -> Self {
+        Self::build(spec, &[])
+    }
+
+    /// `tones`: `(column, frequency)` cells of level tones, set to the baseline.
+    fn build(mut spec: Spectrogram, tones: &[(usize, f64)]) -> Self {
         if !spec.whitened {
             spectrogram::whiten(&mut spec);
         }
-        // robust noise sigma from the median absolute deviation
-        // digital silence whitens to exact zeros; it must not shrink sigma
-        let mut abs: Vec<f32> = spec
-            .db
-            .iter()
-            .step_by((spec.db.len() / 100_000).max(1))
-            .map(|v| v.abs())
-            .filter(|v| *v > 1e-6)
-            .collect();
-        let sigma = (median(&mut abs) * 1.4826).max(1e-3);
+        let sigma = noise_sigma(&spec);
         for v in spec.db.iter_mut() {
-            *v = (*v / sigma).clamp(0.0, Z_MAX);
+            *v /= sigma;
+        }
+        for v in spec.db.iter_mut() {
+            *v = v.clamp(0.0, Z_MAX);
         }
         let rows = spec.rows;
         let mut tmp = vec![0.0f32; rows];
@@ -129,8 +324,33 @@ impl ScoreMap {
             }
             col.copy_from_slice(&tmp);
         }
-        let baseline = spec.db.iter().map(|v| *v as f64).sum::<f64>() / spec.db.len().max(1) as f64;
-        Self { spec, baseline }
+        let mut masked: Vec<bool> = Vec::new();
+        let mut level_cells = 0usize;
+        if !tones.is_empty() {
+            masked = vec![false; spec.db.len()];
+            // the tone's wobble, its main lobe and the blur
+            let half = (LEVEL_LINK_HZ.max(LEVEL_LINK_BINS * spec.df) / spec.df).ceil() as usize + 2;
+            for &(col, f) in tones {
+                let centre = ((f - spec.f_min) / spec.df).round().max(0.0) as usize;
+                let (r0, r1) = (centre.saturating_sub(half), (centre + half).min(rows - 1));
+                masked[col * rows + r0..=col * rows + r1].fill(true);
+            }
+            level_cells = masked.iter().filter(|m| **m).count();
+        }
+        let kept = spec.db.len() - level_cells;
+        let baseline = if level_cells == 0 || kept == 0 {
+            spec.db.iter().map(|v| *v as f64).sum::<f64>() / spec.db.len().max(1) as f64
+        } else {
+            // a masked cell says nothing either way: it holds the baseline of the rest
+            let baseline = spec.db.iter().zip(&masked).filter(|(_, m)| !**m).map(|(v, _)| *v as f64).sum::<f64>() / kept as f64;
+            for (v, m) in spec.db.iter_mut().zip(&masked) {
+                if *m {
+                    *v = baseline as f32;
+                }
+            }
+            baseline
+        };
+        Self { spec, baseline, level_cells: if kept == 0 { 0 } else { level_cells } }
     }
 
     /// Mean brightness under the model curve (and its harmonics).
@@ -159,12 +379,21 @@ impl ScoreMap {
 /// Compute the analysis spectrogram for a region. Whitening medians come from a
 /// wider time context so a long flat tail inside the box is not removed.
 pub fn region_spectrogram(audio: &Audio, region: &Region, cfg: &FitConfig) -> Spectrogram {
+    let (mut wide, first, last) = wide_spectrogram(audio, region, cfg);
+    crop_columns(&mut wide, first, last);
+    wide
+}
+
+/// The whitened spectrogram of the region with its time context (as long as
+/// the region on either side, at least 60 s), and the region's columns in it
+/// (`first..last`).
+fn wide_spectrogram(audio: &Audio, region: &Region, cfg: &FitConfig) -> (Spectrogram, usize, usize) {
     let len = region.t_end - region.t_start;
     let pad = len.max(60.0);
     let t0 = (region.t_start - pad).max(0.0);
     let t1 = (region.t_end + pad).min(audio.duration());
     let cols = ((t1 - t0) / cfg.dt).round().max(1.0) as usize;
-    let mut wide = spectrogram::compute(
+    let wide = spectrogram::compute(
         audio,
         &SpecRequest {
             t_start: t0,
@@ -178,10 +407,49 @@ pub fn region_spectrogram(audio: &Audio, region: &Region, cfg: &FitConfig) -> Sp
     );
     let first = (((region.t_start - t0) / wide.dt).floor().max(0.0) as usize).min(wide.cols - 1);
     let last = (((region.t_end - t0) / wide.dt).ceil() as usize).clamp(first + 1, wide.cols);
-    wide.db = wide.db[first * wide.rows..last * wide.rows].to_vec();
-    wide.t_start += first as f64 * wide.dt;
-    wide.cols = last - first;
-    wide
+    (wide, first, last)
+}
+
+fn crop_columns(spec: &mut Spectrogram, first: usize, last: usize) {
+    spec.db = spec.db[first * spec.rows..last * spec.rows].to_vec();
+    spec.t_start += first as f64 * spec.dt;
+    spec.cols = last - first;
+}
+
+/// The map the ADS-B matcher scores the candidates of a fly-by in `region`
+/// on: [`region_spectrogram`] as a [`ScoreMap`] with the level tones set to
+/// the noise baseline. A level tone is a spectral line whose frequency
+/// changes by less than [`LEVEL_MAX_REL_SLOPE`] of itself per second for
+/// [`LEVEL_WIN_S`] or longer: mains hum, a fan, a compressor. A curve is
+/// scored by the brightness under it, so with such a tone in the map the
+/// flat end of a Doppler curve laid along it counts as if the aircraft
+/// were heard there: the stage-1 fit that every candidate is measured
+/// against looks brighter than the fly-by's line is, and any slow, distant
+/// pass, whose curve is almost level, scores on it. The line of a fly-by
+/// moves through the frequencies, so only its far ends, where it changes
+/// that slowly, can go with the tones; those ends could not be told from a
+/// tone anyway. The tones are looked for in the region's whole time
+/// context, so a tone that only reaches a few seconds into the region is
+/// still known for what it is. `OVERHEAD_KEEP_LEVEL_TONES=1` leaves the
+/// tones in (for comparison).
+pub fn region_score_map(audio: &Audio, region: &Region, cfg: &FitConfig) -> ScoreMap {
+    let (mut wide, first, last) = wide_spectrogram(audio, region, cfg);
+    let tones: Vec<(usize, f64)> = if keep_level_tones() {
+        Vec::new()
+    } else {
+        level_tones(&wide, LEVEL_PEAK_Z * noise_sigma(&wide))
+            .into_iter()
+            .filter(|(col, _)| (first..last).contains(col))
+            .map(|(col, f)| (col - first, f))
+            .collect()
+    };
+    crop_columns(&mut wide, first, last);
+    ScoreMap::build(wide, &tones)
+}
+
+/// `OVERHEAD_KEEP_LEVEL_TONES=1`: leave level tones in the maps (for comparison).
+fn keep_level_tones() -> bool {
+    std::env::var_os("OVERHEAD_KEEP_LEVEL_TONES").is_some()
 }
 
 /// Fit a fly-by inside a time/frequency box of the recording.
@@ -1103,5 +1371,78 @@ mod tests {
         let (p, rms) = fit_points(&pts, &FitConfig::default()).unwrap();
         assert!(rms < 0.6, "rms {rms}");
         assert!((p.v - truth.v).abs() < 3.0 && (p.d / truth.d - 1.0).abs() < 0.15 && (p.tc - truth.tc).abs() < 1.0, "{p:?}");
+    }
+
+    /// A machine tone that runs for part of the recording (so whitening over
+    /// time leaves it in) just under a fly-by's approach frequency: it is
+    /// taken out of the map the fly-by's candidates are scored on, also
+    /// where it only reaches a few seconds into the region, and the
+    /// fly-by's own line stays.
+    #[test]
+    fn level_tone_is_taken_out_and_the_line_stays() {
+        let truth = Flyby { f0: 112.0, v: 72.0, d: 1100.0, tc: 150.0 };
+        let sr = 8000.0;
+        let clean = synthesize(sr, 300.0, &[SynthFlyby { flyby: truth, harmonics: vec![1.0], amplitude: 0.02 }], 0.3, &[], 7);
+        let mut audio = synthesize(sr, 300.0, &[SynthFlyby { flyby: truth, harmonics: vec![1.0], amplitude: 0.02 }], 0.3, &[], 7);
+        // 139.5 Hz from 20 s to 110 s, wobbling by a few tenths of a hertz
+        let tone_hz = 139.5;
+        let mut phase = 0.0f64;
+        for (i, x) in audio.samples.iter_mut().enumerate() {
+            let t = i as f64 / sr;
+            if (20.0..110.0).contains(&t) {
+                let f = tone_hz + 0.25 * (2.0 * std::f64::consts::PI * t / 7.0).sin();
+                phase += 2.0 * std::f64::consts::PI * f / sr;
+                *x += (0.1 * phase.sin()) as f32;
+            }
+        }
+        let cfg = FitConfig::default();
+        // the region starts at 90 s: 20 s of the tone lie inside it
+        let region = Region { t_start: 90.0, t_end: 250.0, f_min: 80.0, f_max: 160.0 };
+        let with = ScoreMap::new(region_spectrogram(&audio, &region, &cfg));
+        let without = region_score_map(&audio, &region, &cfg);
+        assert_eq!(with.level_cells, 0);
+        assert!(without.level_cells > 0, "no level tone found");
+        let along_tone = |map: &ScoreMap| -> f64 {
+            let cols: Vec<usize> = (0..map.spec.cols).filter(|c| (92.0..106.0).contains(&map.spec.col_time(*c))).collect();
+            cols.iter().map(|c| map.spec.sample(*c, tone_hz).unwrap_or(0.0) as f64).sum::<f64>() / cols.len() as f64
+        };
+        assert!(along_tone(&with) > 2.5, "tone not in the plain map: {}", along_tone(&with));
+        assert!((along_tone(&without) - without.baseline).abs() < 0.2, "tone left in: {} vs baseline {}", along_tone(&without), without.baseline);
+        // the fly-by's line is as bright as in the recording without the tone
+        // (in the plain map its flat approach end, 2 Hz above the tone, gains from it)
+        let s_clean = region_score_map(&clean, &region, &cfg).score(&truth, cfg.c, &cfg.harmonics);
+        let (s_with, s_without) = (with.score(&truth, cfg.c, &cfg.harmonics), without.score(&truth, cfg.c, &cfg.harmonics));
+        assert!(s_without > 0.9 * s_clean && s_without < 1.1 * s_clean, "line with the tone taken out {s_without}, without the tone {s_clean}");
+        assert!(s_with > 1.2 * s_clean, "the tone did not add to the curve in the plain map: {s_with} vs {s_clean}");
+    }
+
+    /// A line that keeps falling is not a level tone, however slowly it goes
+    /// through its far end; a short tone is not one either.
+    #[test]
+    fn slow_fly_by_and_short_tone_are_not_level_tones() {
+        // 2.6 km away at 50 m/s: 0.2 Hz/s at the closest approach
+        let truth = Flyby { f0: 77.0, v: 50.0, d: 2600.0, tc: 200.0 };
+        let sr = 8000.0;
+        let mut audio = synthesize(sr, 400.0, &[SynthFlyby { flyby: truth, harmonics: vec![1.0], amplitude: 0.03 }], 0.3, &[], 11);
+        // 8 s of a tone
+        for (i, x) in audio.samples.iter_mut().enumerate() {
+            let t = i as f64 / sr;
+            if (300.0..308.0).contains(&t) {
+                *x += (0.1 * (2.0 * std::f64::consts::PI * 95.0 * t).sin()) as f32;
+            }
+        }
+        let cfg = FitConfig::default();
+        let region = Region { t_start: 100.0, t_end: 330.0, f_min: 55.0, f_max: 110.0 };
+        let with = ScoreMap::new(region_spectrogram(&audio, &region, &cfg));
+        let without = region_score_map(&audio, &region, &cfg);
+        // within 80 s of the closest approach the line moves by more than 0.04 Hz/s
+        let near = |map: &ScoreMap| -> f64 {
+            let cols: Vec<usize> = (0..map.spec.cols).filter(|c| (map.spec.col_time(*c) - truth.tc).abs() < 80.0).collect();
+            cols.iter().map(|c| map.spec.sample(*c, truth.freq_at(map.spec.col_time(*c), cfg.c)).unwrap_or(0.0) as f64).sum::<f64>() / cols.len() as f64
+        };
+        assert!(near(&without) > 0.95 * near(&with), "the fly-by's line was taken for a level tone: {} vs {}", near(&without), near(&with));
+        let col = (0..without.spec.cols).find(|c| without.spec.col_time(*c) > 304.0).unwrap();
+        let (tone_with, tone_without) = (with.spec.sample(col, 95.0).unwrap(), without.spec.sample(col, 95.0).unwrap());
+        assert!(tone_with > 2.5 && tone_without == tone_with, "an 8 s tone was taken out: {tone_without} vs {tone_with}");
     }
 }

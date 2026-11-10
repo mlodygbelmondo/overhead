@@ -43,6 +43,16 @@ enum Cmd {
         /// Remove stationary lines and broadband bursts.
         #[arg(long)]
         whiten: bool,
+        /// Draw the map the ADS-B matcher scores a fly-by's candidates on
+        /// instead: z-scores 0-6 with level tones (hum, machines) taken out.
+        /// Set OVERHEAD_KEEP_LEVEL_TONES=1 to see it with them.
+        #[arg(long)]
+        score_map: bool,
+        /// With --score-map: also write the map's numbers to this file, one
+        /// JSON line (t_start, dt, f_min, df, cols, rows, baseline) and then
+        /// the values as little-endian f32, column by column.
+        #[arg(long, requires = "score_map")]
+        dump: Option<PathBuf>,
         /// Overlay a model curve "f0,v,d,tc" (repeatable).
         #[arg(long = "curve", value_parser = parse_flyby)]
         curves: Vec<Flyby>,
@@ -180,7 +190,7 @@ fn main() -> Result<()> {
                 a.decoder
             );
         }
-        Cmd::Spec { file, t0, t1, fmin, fmax, nfft, width, height, whiten, curves, grid_s, grid_hz, out } => {
+        Cmd::Spec { file, t0, t1, fmin, fmax, nfft, width, height, whiten, score_map, dump, curves, grid_s, grid_hz, out } => {
             let a = load(&file)?;
             let t1 = t1.unwrap_or(a.duration()).min(a.duration());
             if t1 <= t0 {
@@ -190,13 +200,37 @@ fn main() -> Result<()> {
                 &a,
                 &SpecRequest { t_start: t0, t_end: t1, f_min: fmin, f_max: fmax, columns: width as usize, n_fft: nfft, whiten },
             );
-            let (lo, hi) = spec.quantiles(0.05, 0.998);
+            let (mut lo, mut hi) = spec.quantiles(0.05, 0.998);
+            let mut spec = spec;
+            if score_map {
+                let region = overhead_core::fit::Region { t_start: t0, t_end: t1, f_min: fmin, f_max: fmax };
+                let cfg = overhead_core::fit::FitConfig { n_fft: nfft, ..Default::default() };
+                let map = overhead_core::fit::region_score_map(&a, &region, &cfg);
+                eprintln!("level tones: {:.1} % of the map taken out", 100.0 * map.level_cells as f64 / map.spec.db.len().max(1) as f64);
+                spec = map.spec;
+                (lo, hi) = (0.0, 6.0);
+                if let Some(path) = &dump {
+                    use std::io::Write;
+                    let mut f = std::io::BufWriter::new(std::fs::File::create(path)?);
+                    writeln!(
+                        f,
+                        "{}",
+                        serde_json::json!({"t_start": spec.t_start, "dt": spec.dt, "f_min": spec.f_min, "df": spec.df, "cols": spec.cols, "rows": spec.rows, "baseline": map.baseline})
+                    )?;
+                    for v in &spec.db {
+                        f.write_all(&v.to_le_bytes())?;
+                    }
+                }
+            }
             let lut = colormap::lut();
             let mut img = image::RgbImage::new(width, height);
             for x in 0..width {
+                // the column at this pixel's time (the score map has its own column spacing)
+                let t = t0 + (x as f64 + 0.5) / width as f64 * (t1 - t0);
+                let col = (((t - spec.t_start) / spec.dt).floor().max(0.0) as usize).min(spec.cols.saturating_sub(1));
                 for y in 0..height {
                     let f = fmax - (fmax - fmin) * (y as f64 + 0.5) / height as f64;
-                    let v = spec.sample(x as usize, f).unwrap_or(lo);
+                    let v = spec.sample(col, f).unwrap_or(lo);
                     let n = ((v - lo) / (hi - lo)).clamp(0.0, 1.0);
                     img.put_pixel(x, y, image::Rgb(lut[(n * 255.0) as usize]));
                 }

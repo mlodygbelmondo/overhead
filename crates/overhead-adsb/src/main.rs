@@ -143,6 +143,13 @@ enum Cmd {
         map_radius: f64,
         #[arg(long, default_value_t = 100.0)]
         map_step: f64,
+        /// Validation: the known answer, "lat,lon,START" (START in RFC 3339).
+        /// The search itself is unchanged; the summary also says how far the
+        /// hypothesis at the true place got (coarse rank, sieve rank, refined
+        /// score), and the JSON gets `stats.truth_hypothesis` and each
+        /// candidate's `truth_score`.
+        #[arg(long, allow_hyphen_values = true)]
+        truth: Option<String>,
     },
     /// Synthetic end-to-end test on a real ADS-B day.
     E2e {
@@ -211,6 +218,14 @@ fn parse_cut(s: &str, tol: f64) -> Result<locate::Cut> {
         None => None,
     };
     Ok(locate::Cut { at, start_unix, start_tol_s: start_unix.map(|_| tol) })
+}
+
+/// "lat,lon,START" with START in RFC 3339 (the recording's true start).
+fn parse_truth(s: &str) -> Result<(f64, f64, f64)> {
+    let parts: Vec<&str> = s.splitn(3, ',').collect();
+    let [lat, lon, start] = parts.as_slice() else { bail!("--truth wants \"lat,lon,START\"") };
+    let start = chrono::DateTime::parse_from_rfc3339(start.trim()).context("--truth START (RFC 3339)")?;
+    Ok((lat.trim().parse()?, lon.trim().parse()?, start.timestamp_millis() as f64 / 1000.0))
 }
 
 fn pair(s: &str) -> Result<(f64, f64)> {
@@ -295,6 +310,7 @@ fn main() -> Result<()> {
             explain_top,
             map_radius,
             map_step,
+            truth,
         } => {
             let t_audio = std::time::Instant::now();
             let audio = match &recording {
@@ -415,7 +431,7 @@ fn main() -> Result<()> {
                 cache_root: root.clone(),
                 streams: cli.streams,
                 flat_ground,
-                truth: None,
+                truth: truth.as_deref().map(parse_truth).transpose()?,
                 cuts,
                 cut_gap_max_s: cut_gap_max,
             };
@@ -494,6 +510,35 @@ fn main() -> Result<()> {
                             _ => String::new(),
                         }
                     );
+                }
+            }
+            if truth.is_some() {
+                match &res.stats.truth_hypothesis {
+                    Some(t) => {
+                        let rank = |r: Option<usize>| r.map_or("-".to_string(), |r| r.to_string());
+                        eprintln!(
+                            "truth: coarse score {:.2} (group rank {} of {}), sieve rank {}, {} by the search; refined there: score {:.2}, {:.0} m from the true place",
+                            t.coarse,
+                            rank(t.group_rank),
+                            res.stats.groups,
+                            rank(t.sieve_rank),
+                            if t.refined_in_search { "refined" } else { "not refined" },
+                            t.refined,
+                            t.dist_m
+                        );
+                        for (det, hex, t_cpa) in &t.assign {
+                            eprintln!("  truth cell: det {det} = {hex}, closest approach {}", overhead_adsb::matcher::utc(*t_cpa));
+                        }
+                    }
+                    None => eprintln!("truth: no hypothesis at the true cell (no pass there fits any detection's speed, distance and timing)"),
+                }
+                let near = res.candidates.iter().find(|c| {
+                    let t = truth.as_deref().and_then(|t| parse_truth(t).ok());
+                    t.is_some_and(|(la, lo, _)| overhead_adsb::geo::ground_distance(c.lat, c.lon, la, lo) < 2000.0)
+                });
+                match near {
+                    Some(c) => eprintln!("truth: candidate #{} is within 2 km of the true place", c.rank),
+                    None => eprintln!("truth: no reported candidate within 2 km of the true place"),
                 }
             }
             if let Some(a) = &res.ambiguity {

@@ -39,6 +39,26 @@ pub const TRACE_TAU: f64 = 1.5;
 /// Model samples are taken this far beyond the first and last traced point
 /// (s), so the heard closest approach is found even near the trace's ends.
 const TRACE_PAD: f64 = 5.0;
+/// A detection's line counts as seen in a column when the map under its
+/// stage-1 fit (the brightest of its lines, within two bins) reaches this.
+const SUPPORT_Z: f32 = 1.5;
+/// The line's support is smoothed over this (s) either side: it begins and
+/// ends where at least `SUPPORT_MIN_FILL` of such a stretch is lit.
+const SUPPORT_SMOOTH_S: f64 = 3.0;
+const SUPPORT_MIN_FILL: f64 = 0.3;
+/// The support grows from the line seen within `SUPPORT_SEED_S` of the
+/// fitted closest approach, over breaks of at most `SUPPORT_GAP_S`.
+const SUPPORT_SEED_S: f64 = 30.0;
+const SUPPORT_GAP_S: f64 = 10.0;
+/// Columns this far (s) beyond the line's support still count.
+const SUPPORT_MARGIN_S: f64 = 20.0;
+
+/// `OVERHEAD_NO_SUPPORT`: every column of a detection's map counts (the old behaviour, for comparison).
+fn no_support() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var_os("OVERHEAD_NO_SUPPORT").is_some())
+}
+
 /// Number of rest-frequency sweep values, and that padded to whole 8-lane
 /// vectors (the padding has `f0·m = NaN`, which never falls on the map).
 const NM: usize = (2.0 * F0_SWEEP / F0_STEP + 0.5) as usize + 1;
@@ -371,10 +391,91 @@ unsafe fn add_mean_avx512(totals: &mut [f64; NMP], acc: &[f64; NMP], nh: f64) {
     }
 }
 
+/// First and last column of a detection's map in which candidates are
+/// scored: the stretch around the fitted closest approach in which the
+/// line under its stage-1 fit is seen, and [`SUPPORT_MARGIN_S`] beyond
+/// either end (a
+/// real flight's curve may follow the line further than the straight fit
+/// does). The map reaches 30 s and more beyond the detection's box, and the
+/// box itself is as long as the fitted pass would take, not as long as the
+/// aircraft was heard: what sounds there (a tone under the flat end of a
+/// curve, another aircraft) would count for every curve laid across it,
+/// the stage-1 fit that sets the scale included. Unlike a weight by
+/// distance, this holds whatever the range the aircraft is heard to: in a
+/// quiet place a line is seen for minutes, and all of it counts.
+fn line_support(map: &ScoreMap, fb: &Flyby, harmonics: &[f64], c: f64) -> (usize, usize) {
+    let spec = &map.spec;
+    let cols = spec.cols;
+    if cols == 0 {
+        return (0, 0);
+    }
+    let lit: Vec<bool> = (0..cols)
+        .map(|col| {
+            let f = fb.freq_at(spec.col_time(col), c);
+            harmonics.iter().any(|h| {
+                [-2.0, -1.0, 0.0, 1.0, 2.0].iter().any(|o| spec.sample(col, f * h + o * spec.df).is_some_and(|v| v >= SUPPORT_Z))
+            })
+        })
+        .collect();
+    let half = ((SUPPORT_SMOOTH_S / spec.dt).round() as usize).max(1);
+    let mut prefix = vec![0usize; cols + 1];
+    for (i, l) in lit.iter().enumerate() {
+        prefix[i + 1] = prefix[i] + usize::from(*l);
+    }
+    let seen = |col: usize| -> bool {
+        let (a, b) = (col.saturating_sub(half), (col + half + 1).min(cols));
+        lit[col] && (prefix[b] - prefix[a]) as f64 >= SUPPORT_MIN_FILL * (b - a) as f64
+    };
+    // The stretch around the fitted closest approach in which the line is
+    // seen without a break longer than `SUPPORT_GAP_S`: what is lit under
+    // the fit further off, after a longer silence, is not this fly-by (a
+    // tone that stops, another aircraft's line crossing the fit's flat end).
+    let centre = (((fb.tc - spec.t_start) / spec.dt).floor().max(0.0) as usize).min(cols - 1);
+    let reach = (SUPPORT_SEED_S / spec.dt).round() as usize;
+    let seed = (0..=reach).flat_map(|k| [centre.checked_sub(k), (centre + k < cols).then_some(centre + k)]).flatten().find(|c| seen(*c));
+    let Some(seed) = seed else {
+        // (no line under the fit near its closest approach: nothing to go by, every column counts)
+        return (0, cols - 1);
+    };
+    let gap = (SUPPORT_GAP_S / spec.dt).round() as usize;
+    let (mut first, mut last) = (seed, seed);
+    for col in (0..seed).rev() {
+        if seen(col) {
+            first = col;
+        } else if first - col > gap {
+            break;
+        }
+    }
+    for col in seed + 1..cols {
+        if seen(col) {
+            last = col;
+        } else if col - last > gap {
+            break;
+        }
+    }
+    let margin = (SUPPORT_MARGIN_S / spec.dt).round() as usize;
+    let out = (first.saturating_sub(margin), (last + margin).min(cols - 1));
+    if std::env::var_os("OVERHEAD_DEBUG_SUPPORT").is_some() {
+        eprintln!(
+            "[support] tc {:.0} s: line seen {:.0}..{:.0} s, scored {:.0}..{:.0} s of the map's {:.0}..{:.0} s",
+            fb.tc,
+            spec.col_time(first),
+            spec.col_time(last),
+            spec.col_time(out.0),
+            spec.col_time(out.1),
+            spec.col_time(0),
+            spec.col_time(cols - 1)
+        );
+    }
+    out
+}
+
 pub enum Observed {
     Spectrogram {
         map: ScoreMap,
         harmonics: Vec<f64>,
+        /// First and last column that count ([`line_support`]).
+        support: (usize, usize),
         /// Score of the stage-1 fit on this map.
         reference: f64,
         /// [`Observed::score_bound`].
@@ -413,9 +514,9 @@ impl Observed {
         let t1 = (det.region.t_end + 30.0).min(audio.duration());
         let region = Region { t_start: t0, t_end: t1, f_min: f_lo, f_max: f_hi };
         let cfg = FitConfig::default();
-        let spec = fit::region_spectrogram(audio, &region, &cfg);
-        let map = ScoreMap::new(spec);
-        let mut obs = Observed::Spectrogram { map, harmonics: hs, reference: 0.0, bound: f64::INFINITY };
+        let map = fit::region_score_map(audio, &region, &cfg);
+        let support = if no_support() { (0, map.spec.cols.saturating_sub(1)) } else { line_support(&map, &fb, &hs, c) };
+        let mut obs = Observed::Spectrogram { map, harmonics: hs, support, reference: 0.0, bound: f64::INFINITY };
         let reference = {
             let Observed::Spectrogram { map, .. } = &obs else { unreachable!() };
             let times: Vec<f64> = (0..map.spec.cols).map(|c| map.spec.col_time(c)).collect();
@@ -470,6 +571,21 @@ impl Observed {
         }
     }
 
+    /// The point `(recording time, frequency)` of the detection's line that
+    /// a modelled curve is laid through (its rest frequency is that
+    /// frequency over the model's Doppler factor at that time): stage 1's
+    /// `(tc, f0)` on the spectrogram, the traced point nearest `tc` for a
+    /// traced line; none for the model-only score, which compares curve
+    /// shapes and does not use a rest frequency.
+    pub fn anchor_point(&self, det: &Detection) -> Option<(f64, f64)> {
+        let tc = det.flyby.tc;
+        match self {
+            Observed::Spectrogram { .. } => Some((tc, det.flyby.f0)),
+            Observed::Trace { points, .. } => points.iter().copied().min_by(|a, b| (a.0 - tc).abs().total_cmp(&(b.0 - tc).abs())),
+            Observed::Model { .. } => None,
+        }
+    }
+
     /// Recording times at which the model curve must be evaluated.
     pub fn times(&self, stride: usize) -> Vec<f64> {
         match self {
@@ -498,7 +614,7 @@ impl Observed {
         // (padded: the lanes past NM are never read)
         let mut totals = [0.0f64; NMP];
         let denom = match self {
-            Observed::Spectrogram { map, harmonics, .. } => {
+            Observed::Spectrogram { map, harmonics, support, .. } => {
                 let spec = &map.spec;
                 let mut cnt = 0usize;
                 let nh = harmonics.len() as f64;
@@ -510,11 +626,14 @@ impl Observed {
                 let kernel = sweep_kernel(spec.rows);
                 for (i, col) in (0..spec.cols).step_by(stride.max(1)).enumerate() {
                     let Some(&kk) = k.get(i) else { break };
-                    if !kk.is_finite() {
-                        // no model there (beyond the ADS-B track): the column
-                        // counts at the noise floor, so a curve that is only
-                        // known over part of the window cannot score as if
-                        // its known part were all of it
+                    // No model there (beyond the ADS-B track), or the column
+                    // lies outside the time the detection's line was seen in
+                    // (see `support`): it counts at the noise floor, so a
+                    // curve that is only known over part of the window cannot
+                    // score as if its known part were all of it, and nothing
+                    // that sounds long before or after the fly-by counts for
+                    // any curve.
+                    if !kk.is_finite() || col < support.0 || col > support.1 {
                         for t in totals.iter_mut() {
                             *t += map.baseline;
                         }
@@ -750,6 +869,80 @@ mod tests {
                 assert_eq!((xi / d).to_bits(), qi.to_bits(), "{xi} / {d}");
             }
         }
+    }
+
+    /// A curve is laid through the traced point nearest the fitted `tc`;
+    /// the model-only score has no such point.
+    #[test]
+    fn anchor_point_of_a_trace_and_of_the_model() {
+        let fb = Flyby { f0: 110.0, v: 55.0, d: 800.0, tc: 300.0 };
+        let det = traced(&fb);
+        let (t, f) = Observed::for_detection(None, &det).anchor_point(&det).expect("a traced point");
+        assert!((t - det.flyby.tc).abs() <= 3.0 && (f - fb.freq_at(t, DEFAULT_C)).abs() < 1e-9, "{t} {f}");
+        let mut plain = det.clone();
+        plain.trace = None;
+        assert!(Observed::for_detection(None, &plain).anchor_point(&plain).is_none());
+    }
+
+    /// On the spectrogram: the fly-by's own curve scores about 1; a curve
+    /// through the detection's point whose closest approach is a second or
+    /// more late scores clearly less; a tone that sounds a minute before the
+    /// line is seen, under the flat end of a curve, does not count.
+    #[test]
+    fn spectrogram_score_follows_timing_and_counts_where_the_line_is_seen() {
+        use overhead_core::synth::{SynthFlyby, synthesize};
+        let fb = Flyby { f0: 120.0, v: 70.0, d: 500.0, tc: 150.0 };
+        let c = DEFAULT_C;
+        let sr = 8000.0;
+        let mut audio = synthesize(sr, 300.0, &[SynthFlyby { flyby: fb, harmonics: vec![1.0], amplitude: 0.06 }], 0.3, &[], 5);
+        // a tone 2 Hz above the approach frequency, 60 to 110 s before the
+        // closest approach, wandering too much to be taken for a level tone
+        let tone = fb.f_approach(c) + 2.0;
+        for (i, x) in audio.samples.iter_mut().enumerate() {
+            let t = i as f64 / sr;
+            if (40.0..90.0).contains(&t) {
+                *x += (0.2 * (2.0 * std::f64::consts::PI * (tone + 0.9 * (t / 3.0).sin()) * t).sin()) as f32;
+            }
+        }
+        let mut det = traced(&fb);
+        det.trace = None;
+        det.region = Region { t_start: 60.0, t_end: 240.0, f_min: 80.0, f_max: 170.0 };
+        let obs = Observed::from_audio(&audio, &det);
+        let (t_first, t_last) = match &obs {
+            Observed::Spectrogram { map, support, .. } => (map.spec.col_time(support.0), map.spec.col_time(support.1)),
+            _ => panic!("spectrogram"),
+        };
+        assert!(t_first > 95.0 && t_first < 140.0 && t_last > 160.0, "support {t_first}..{t_last}");
+        let times = obs.times(1);
+        let curve = |p: &Flyby| -> Vec<f64> { times.iter().map(|t| p.freq_at(*t, c) / p.f0).collect() };
+        let k = curve(&fb);
+        let (own, _) = obs.score(fb.f0, &k, 1);
+        assert!((own - 1.0).abs() < 0.05, "own curve: {own}");
+        let mut last = own;
+        for late_s in [1.0, 2.0, 3.0] {
+            let late = Flyby { tc: fb.tc + late_s, ..fb };
+            // (the rest frequency of a late curve through the detection's point)
+            let f0_late = fb.f0 / (late.freq_at(fb.tc, c) / late.f0);
+            let (r, _) = obs.score(f0_late, &curve(&late), 1);
+            assert!(r < last - 0.1, "{late_s} s late: {r} after {last}");
+            last = r;
+        }
+        assert!(last < 0.2, "3 s late: {last}");
+        // a slow, distant pass whose almost level curve lies along the tone:
+        // nothing where the line is seen, so it scores nothing; with every
+        // column counted the tone would make it a match
+        let level = Flyby { f0: tone, v: 6.0, d: 6000.0, tc: fb.tc };
+        let (on_tone, _) = obs.score(level.f0, &curve(&level), 1);
+        assert!(on_tone < 0.05, "the tone before the line counted: {on_tone}");
+        let mut all = obs;
+        if let Observed::Spectrogram { map, support, reference, .. } = &mut all {
+            *support = (0, map.spec.cols - 1);
+            // (the scale stays the fit's score within the support: only what
+            // the level curve collects changes)
+            let _ = reference;
+        }
+        let (unwindowed, _) = all.score(level.f0, &curve(&level), 1);
+        assert!(unwindowed > on_tone + 0.1, "the tone counts {unwindowed} with every column, {on_tone} within the support");
     }
 
     fn traced(fb: &Flyby) -> Detection {

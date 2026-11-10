@@ -475,27 +475,96 @@ Follows the video, with these changes:
    was half the median stage-1 distance (700–2000 m), stage-1 distances run
    short, and the term fired at 1 of the 490 reported candidates of the
    real runs.
-6. **Curve sieve.** Hypotheses are grouped by flight assignment. The best
-   2500 groups by coarse score get a cheap curve score (step 7 at stride 4)
-   at their best cell, with the start that their passes imply there; the
-   best 300 of those get a small start/`c0` scan and the best 80 the full
-   refinement. (Before, only the best 300 groups by coarse score reached any
-   curve check, and the true assignment was often ranked far below that.)
+6. **Curve sieve.** Hypotheses are grouped by flight assignment. When the
+   recording has sure detections (confident and not flagged as a possible
+   ground vehicle), a hypothesis belongs to the group of its matches on
+   those alone, and a match on a doubtful detection counts 0.3 of itself
+   when groups are ranked: a doubtful detection has wide speed and distance
+   ranges that some flight fits almost anywhere near an airfield, and keyed
+   and ranked with those matches the cells of one right pair of flights fall
+   into many groups, each outranked by groups of chance matches (the
+   doubtful matches stay in the hypothesis and are scored with it). For the
+   best 10 000 groups the area the group was found in is scanned with a
+   cheap curve score (step 7, every 16th column): a 450 m lattice (wider
+   over a large area, at most 3 km from the group's best cell), every point
+   with the start all its passes imply together and the start each implies
+   on its own. A group's best cell is the best by stage 1's speed, distance
+   and closest-approach times; when those are off (an aircraft that slowed
+   or turned) the place where the curves fit lies a kilometre or two from
+   it. Two fly-bys fit at once only where their passes are heard the right
+   time apart, a strip a hundred metres or so across that a 450 m lattice
+   mostly steps over, so where the group's two heaviest sure matches are heard
+   within 14 s (plus half the width of their closest-approach ranges) of
+   what stage 1 measured, a lattice point is taken as points 150 m apart
+   along the direction in which that time difference changes, and elsewhere
+   it is left out. From the best point the score is climbed (place and
+   start, Nelder–Mead, every 8th column). The best 1000 groups get a second
+   climb (every 4th column) and the best 120 of those the full refinement
+   (with a single detection: 20 000, 4000 and 240). A start outside its
+   window costs in the scan and the climbs what it costs in the refinement.
+   (Before: the best 2500 groups, one cheap score each at the group's best
+   cell with the start its passes imply together, 300 groups, two cells
+   each, to a start/`c0` scan, 80 refined. On the reference video's own recording the right pair of
+   flights was group 4084 by coarse score, and at its best cell, 1.6 km
+   from the true place, only one of its two curves fitted: see
+   [evidence.md](evidence.md#the-reference-videos-own-recording-2026-11-10).)
 7. **Full Doppler-curve scoring** of the best hypotheses (by flight
    assignment): for each matched detection the heard curve of the *real*
    flight geometry is computed with retarded time and a speed of sound that
-   falls with height (≈2 m/s per km of source height for the ray, 3.9 m/s
-   per km at the source), laid on the whitened spectrogram around the
-   detection with all its harmonics, sweeping `f0` ±1.2 %. The score is
-   relative to the stage-1 straight-line fit on the same map (1.0 = as good;
-   real geometry often does better). `S` is shared, so every detection after
+   falls with height (≈2 m/s per km of source height: the mean along the
+   path, for the travel time and for the Doppler factor), laid on the
+   whitened spectrogram around the detection with all its harmonics. The
+   score is relative to the stage-1 straight-line fit on the same map (1.0 =
+   as good; real geometry often does better). Four things about how a curve
+   is laid and what counts:
+   - *Rest frequency.* Stage 1 measured the line at one point: at `tc` it is
+     at `f0`. The modelled curve is laid through that point: its rest
+     frequency is `f0` over the model's Doppler factor at `tc` (then swept
+     ±1.2 %), which is `f0` itself only when the modelled closest approach
+     falls exactly on `tc`. Stage 1 fits a straight pass at constant speed;
+     for an aircraft that slowed, turned or descended that fit puts `tc`,
+     and with it `f0`, seconds off along the line (the reference video's
+     King Air, slowing from 227 to 195 kt at its closest approach: `tc` 9 s
+     early, `f0` 138 Hz for a true 126 Hz), and with the rest frequency kept
+     at `f0` ±1.2 % the right flight could not be laid on its own line.
+   - *Level tones.* Mains hum, fans and compressors are taken out of the map
+     (`fit::region_score_map`): a spectral line whose frequency
+     changes by less than 0.04 % of itself per second over 20 s, a wobble
+     of a few tenths of a hertz allowed, found in the region's whole time
+     context. A level tone under the flat end of a curve counted as if the
+     aircraft were heard there, for the stage-1 fit that sets the scale and
+     for any slow, distant pass, whose curve is almost level.
+   - *Where the line is seen.* Only the columns count in which the
+     detection's line is seen under its stage-1 fit (the stretch around
+     `tc` without a break of more than 10 s), and 20 s beyond either end;
+     when no line is seen within 30 s of `tc`, every column counts.
+     The map reaches 30 s and more beyond the detection's box, which is as
+     long as the fitted pass would take, not as long as the aircraft was
+     heard; what sounds there counted for every curve laid across it.
+   - *Speed of sound in the Doppler factor.* The shift of a moving source is
+     `v · n / c` at the source, with `n` the direction in which the ray
+     that reaches the observer leaves it. In air that warms towards the
+     ground that ray is an arc, steeper at the aircraft than the straight
+     line to the observer; its horizontal slowness is the same all along it
+     (Snell), and for an arc that gives the straight line's direction over
+     the mean sound speed along the path. With the sound speed at the
+     aircraft (3.9 m/s per km lower, as it was) the swing of an aircraft at
+     5.5 km came out 3.3 % too large; fits then wanted a ground speed of
+     sound of 355 m/s to undo it, and aircraft at different heights could
+     not be fitted with one value.
+
+   `S` is shared, so every detection after
    the first is locked to the flight geometry ("combined locked scoring").
    Observer east/north, `S` and the ground speed of sound `c0` (prior
    340 ± 9 m/s, i.e. −15…+35 °C) are optimised with Nelder–Mead (with a
    soft wall at the edge of the search region). A match
    counts only above 0.45 (chance alignments reach 0.1–0.5) and is capped at
-   3.0 (a detection whose stage-1 fit was poor has a tiny reference, so a
-   ratio of 10+ on one bright line must not outweigh several good matches),
+   1.5 (a real flight that slowed or turned explains more of the line than
+   a straight pass and scores 1.1–1.3; a score far above that says the
+   stage-1 fit was poor, a faint line it covers a tenth of, and almost any
+   curve along the real line then scores 3 or more: one such match must not
+   outweigh the two or three good ones a right answer is made of; the cap
+   was 3.0, with which it counted as 4.6 matches),
    and only fully
    if the flight's modelled heard CPA falls within the detection's `tc`
    uncertainty + 10 s (beyond that it fades out with a 5 s Gaussian), so
@@ -542,8 +611,9 @@ Follows the video, with these changes:
 9. **Wide scan.** The refinement only moves a few hundred metres, but the
    cell a group was seeded from can be kilometres from where its curves fit
    best. The 16 best distinct assignments are therefore also scanned over
-   ±5 km in 250 m steps (start implied at each point by the assigned passes),
-   and the two best points found are refined like the others.
+   ±5 km in 250 m steps (at each point the better of the start the assigned
+   passes imply together and the start each implies on its own), and the two
+   best points found are refined like the others.
 10. **Repeated passes of one flight** (`overhead_adsb::repeat`). When the
    start is free, one aircraft flying circuits or out and back can explain
    several detections at a wrong place: once one of its passes fits, a
@@ -586,6 +656,29 @@ Follows the video, with these changes:
    competitor must not make that wrong place look sure (Moerdijk harbour,
    stated start: with the evidence alone the 8.4 km wrong #1 went from
    margin 0.76 to 1.04).
+
+**Comparing with the matcher before.** Each of the changes of 2026-11-10
+(see [evidence.md](evidence.md#the-reference-videos-own-recording-2026-11-10))
+has a switch that turns it off, for comparisons:
+
+| set | effect |
+|---|---|
+| `OVERHEAD_NO_ANCHOR=1` | a curve's rest frequency is the detection's `f0` whatever the modelled timing |
+| `OVERHEAD_KEEP_LEVEL_TONES=1` | level tones stay in the score maps |
+| `OVERHEAD_NO_SUPPORT=1` | every column of a detection's map counts |
+| `OVERHEAD_SOURCE_C=1` | the Doppler factor uses the speed of sound at the aircraft |
+| `OVERHEAD_OLD_FUNNEL=1` | sieve, quick check and wide scan as before (2500, 300 and 80 groups, the group's best cells by coarse score, the joint start) |
+| `OVERHEAD_MAX_CURVE=3` | the old cap on one detection's curve score |
+
+`locate --truth LAT,LON,START` (START in RFC 3339) changes nothing in the
+search and adds to the summary how far the hypothesis at the true cell got
+(coarse rank, sieve rank, refined score) and whether a candidate lies within
+2 km; with `OVERHEAD_DEBUG_GROUP=hex,hex` it also follows the group matched
+to exactly those aircraft on the sure detections through the sieve and the
+quick check. `OVERHEAD_DEBUG_SUPPORT=1` prints where each detection's line
+is seen; `overhead-cli spec FILE --score-map` draws the map the matcher
+scores on (`--dump` writes its numbers), and `OVERHEAD_DEBUG_LEVEL=1` lists
+the level tones found.
 
 Without audio (`--detections` only), each detection's own fitted curve stands
 in for the spectrogram (a Gaussian kernel in log-frequency, σ = 1 % (it was 0.4 %, which matched almost nothing)).
@@ -925,8 +1018,10 @@ spectrogram brightness (`Observed::Trace` in `overhead-adsb/src/score.rs`), as
 in the reference video for a line too faint to score: the mean over the
 points of exp(-½·d²), d the distance from the point to the curve across it
 in (t / 1.5 s, ln f / 1.2 %), with the same ±1.2 % rest-frequency sweep as
-the spectrogram score. Detections without a trace are scored as before
-(the locate output for them is unchanged). `overhead-adsb locate --detections
+the spectrogram score, around the rest frequency that lays the curve
+through the traced point nearest the fitted `tc` (since 2026-11-10, as for
+the spectrogram score: method step 7; the calibration below was made with
+the sweep around the fitted `f0`). `overhead-adsb locate --detections
 FILE` takes the edited JSON the app saves.
 
 Calibration on the synthetic development cases (`e2e-fix/dev`, s4-00..03,
@@ -959,6 +1054,26 @@ is not among the kept ADS-B tracks (propeller, rotor and unknown types only).
 
 ### Limitations and open issues
 
+- **Stage 1 fits a straight pass at constant speed.** For an aircraft that
+  slowed, turned or descended while it was heard, the fitted speed,
+  distance and closest-approach time can be far off (the reference video's
+  King Air: 82 m/s and 1.7 km for 117 falling to 100 m/s and 3.5 km, 9 s
+  early). The
+  curve scoring no longer depends on them (method step 7), but the coarse
+  search still does: its speed and distance gates, and the timing by which
+  it finds cells, follow stage 1, and the sieve's scan only reaches 3 km
+  around a group's best cell and time differences 14 s from stage 1's.
+- **A poorly fitted detection attracts chance matches.** With the rest
+  frequency taken through the detection's point, a curve can be laid on a
+  detection's line whenever it has about the line's slope there; on a
+  detection whose stage-1 fit covers little of its line such curves score
+  up to the cap (1.5). One synthetic case is lost to that (evidence.md).
+- **Search time.** The sieve scans up to 10 000 groups of hypotheses, each
+  point with one curve score per matched fly-by and start tried (so its
+  cost grows with the square of the number of fly-bys matched): about 30 s
+  on a search of a few thousand flights with two fly-bys matched, and
+  about a doubling of `locate` on the province-sized searches of the real
+  test set.
 - **Wind is not modelled.** For a microphone at rest on the ground, wind
   does not change the source speed that matters (that is the ground speed,
   which ADS-B reports); it changes the effective speed of sound along each

@@ -16,9 +16,12 @@
 //!    runs, with no detection anywhere near that time, counts against the
 //!    hypothesis by how likely stage 1 was to detect it (slant range, class,
 //!    background: [`crate::silence`]).
-//! 5. **Curve sieve.** Hypotheses are grouped by flight assignment; the best
-//!    few thousand groups get a cheap curve score at their best cell, with
-//!    the start their passes imply there, and only the best of those go on.
+//! 5. **Curve sieve.** Hypotheses are grouped by flight assignment; for the
+//!    best ten thousand groups the area the group was found in is scanned
+//!    with a cheap curve score (every point with the starts its passes
+//!    imply, together and each on its own) and the score is climbed from the
+//!    best point; a second, finer climb for the best thousand decides which
+//!    go on.
 //! 6. **Curve scoring.** The best hypotheses are refined continuously
 //!    (observer east/north, `S`, ground speed of sound `c0`): for each matched
 //!    detection the full heard Doppler curve of the real flight geometry
@@ -54,9 +57,15 @@ use crate::score::Observed;
 /// Curve score (relative to the stage-1 fit) a match must exceed to count.
 /// Chance alignments of a wrong flight's curve typically reach 0.1-0.5.
 pub const MIN_CURVE: f64 = 0.45;
-/// Cap on one detection's curve score in the total (scores are relative to the
-/// stage-1 fit, which can be poor, making the ratio huge).
-pub const MAX_CURVE: f64 = 3.0;
+/// Cap on one detection's curve score in the total. Scores are relative to
+/// the stage-1 fit; a real flight that slowed or turned explains more of the
+/// line than a straight pass can and scores 1.1-1.3. A score far above that
+/// says the stage-1 fit was poor (a faint line it covers a tenth of), not
+/// that the match is that good: on such a detection almost any curve along
+/// the real line scores 3 or more, and one such match must not outweigh
+/// the two or three good ones a right answer is made of. (It was 3.0; a
+/// chance match on one faint detection then counted 4.6 matches.)
+pub const MAX_CURVE: f64 = 1.5;
 /// How far (s of emission time) a flight's track may be extrapolated beyond
 /// its first and last ADS-B report when it is scored: about one report
 /// interval of a thinned light-aircraft trace (5-10 s), within which the
@@ -108,9 +117,10 @@ pub struct MatchConfig {
     /// Speed of sound decreasing with source height.
     pub lapse: bool,
     pub c_bounds: (f64, f64),
-    /// Assignment groups (best coarse first) that get the cheap curve sieve.
+    /// Assignment groups (best coarse first) that get the curve sieve (a
+    /// scan of the group's area and a climb from its best point).
     pub sieve: usize,
-    /// Of those, the groups (2 cells each) that get the start/c0 curve check.
+    /// Of those, the groups that get the quick check (a second, finer climb).
     pub refine: usize,
     /// Of those, how many get the full continuous refinement (after a quick curve check).
     pub refine_full: usize,
@@ -158,9 +168,9 @@ impl Default for MatchConfig {
             mic_height: 1.5,
             lapse: true,
             c_bounds: (322.0, 356.0),
-            sieve: 2500,
-            refine: 300,
-            refine_full: 80,
+            sieve: 10_000,
+            refine: 1000,
+            refine_full: 120,
             widen: 16,
             widen_radius: 5000.0,
             unc_temp: 0.02,
@@ -333,11 +343,115 @@ pub fn vd_evidence(det: &Detection, v: f64, d: f64) -> f64 {
     (-0.5 * (chi_v + chi_r)).exp().max(VD_FLOOR)
 }
 
+/// The modelled Doppler factor of a pass at one recording time (start `s`),
+/// evaluated at that time itself (not read off the curve's samples, which
+/// are up to 4 s apart in the sieve: near the closest approach of a close
+/// pass the factor changes by a percent or more within that). `None` beyond
+/// the track or for a factor no aircraft makes.
+fn factor_at(seg: &flight::Segment, o: V3, up: V3, sound: &Sound, s: f64, t: f64) -> Option<f64> {
+    let mut hint = 0;
+    let h = flight::heard(seg, o, up, sound, s + t, None, &mut hint);
+    if !(h.tau >= seg.t0() - EXTRAP_S && h.tau <= seg.t1() + EXTRAP_S) {
+        return None;
+    }
+    let k = flight::doppler_factor(&h, sound);
+    (k.is_finite() && (0.6..=1.7).contains(&k)).then_some(k)
+}
+
+/// `OVERHEAD_NO_ANCHOR`: a curve's rest frequency is the detection's `f0`
+/// whatever the modelled timing (the old behaviour, for comparison).
+fn no_anchor() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var_os("OVERHEAD_NO_ANCHOR").is_some())
+}
+
+/// The sieve's scan of a group's area: at most about `SIEVE_POINTS` points,
+/// no closer than `SIEVE_STEP_M`, within `SIEVE_RADIUS_M` of its best cell.
+const SIEVE_POINTS: f64 = 120.0;
+const SIEVE_STEP_M: f64 = 450.0;
+const SIEVE_RADIUS_M: f64 = 3000.0;
+/// Where two fly-bys must fit together: the sieve's scan takes points
+/// `SIEVE_ACROSS_M` apart along the direction in which the time between their
+/// passes changes (when that step changes it by more than `SIEVE_ACROSS_S`),
+/// and only where that time is within `SIEVE_PAIR_S` (and half the width of
+/// either fly-by's closest-approach range) of stage 1's: its times can be
+/// that far out for an aircraft that slowed or turned.
+const SIEVE_ACROSS_M: f64 = 150.0;
+const SIEVE_ACROSS_S: f64 = 0.5;
+const SIEVE_PAIR_S: f64 = 14.0;
+/// The climb after the sieve's scan ([`Search::polish`]): first steps
+/// in place (m) and start (s), and the number of steps.
+const SIEVE_POLISH_M: f64 = 200.0;
+const SIEVE_POLISH_S: f64 = 3.0;
+const SIEVE_POLISH_STEPS: usize = 60;
+/// The quick check's climb on the sharp maps from the sieve's place:
+/// first steps in place (m) and start (s), and the number of steps.
+const QUICK_POLISH_M: f64 = 100.0;
+const QUICK_POLISH_S: f64 = 1.5;
+const QUICK_POLISH_STEPS: usize = 60;
+/// Column strides of the sieve's curve scores: every sixteenth 0.25 s column
+/// in the scan, every eighth in the climb (the quick check that follows uses
+/// every fourth).
+const SIEVE_SCAN_STRIDE: usize = 16;
+const SIEVE_STRIDE: usize = 8;
+
+/// Points of the sieve's scan and their spacing (m): a lattice over `area`
+/// (`[lat min, lat max, lon min, lon max]`, the cells a group was found in)
+/// cut to `SIEVE_RADIUS_M` around its best cell `(lat, lon)`.
+fn sieve_points(lat: f64, lon: f64, area: [f64; 4]) -> (Vec<(f64, f64)>, f64) {
+    let m_lon = M_PER_DEG_LAT * lat.to_radians().cos();
+    // metres north/east of the best cell
+    let n0 = ((area[0] - lat) * M_PER_DEG_LAT).max(-SIEVE_RADIUS_M);
+    let n1 = ((area[1] - lat) * M_PER_DEG_LAT).min(SIEVE_RADIUS_M);
+    let e0 = ((area[2] - lon) * m_lon).max(-SIEVE_RADIUS_M);
+    let e1 = ((area[3] - lon) * m_lon).min(SIEVE_RADIUS_M);
+    let (dn, de) = ((n1 - n0).max(0.0), (e1 - e0).max(0.0));
+    let step = ((dn * de / SIEVE_POINTS).sqrt()).max(SIEVE_STEP_M);
+    // (whole steps that fit: the lattice stays inside the area)
+    let (kn, ke) = ((dn / step).floor() as i32, (de / step).floor() as i32);
+    let mut out = Vec::with_capacity(((kn + 1) * (ke + 1)) as usize);
+    for i in 0..=kn {
+        for j in 0..=ke {
+            // centred in the area
+            let n = n0 + 0.5 * (dn - kn as f64 * step) + i as f64 * step;
+            let e = e0 + 0.5 * (de - ke as f64 * step) + j as f64 * step;
+            out.push((lat + n / M_PER_DEG_LAT, lon + e / m_lon));
+        }
+    }
+    (out, step)
+}
+
+/// What a match on a doubtful detection counts of itself when groups are
+/// ranked for the sieve (see `sure` in the search).
+const DOUBTFUL_IN_RANK: f64 = 0.3;
+
+/// Groups in the sieve, in the quick check and fully refined in the old funnel.
+const OLD_SIEVE: usize = 2500;
+const OLD_REFINE: usize = 300;
+const OLD_REFINE_FULL: usize = 80;
+
+/// `OVERHEAD_OLD_FUNNEL`: the sieve, the quick check and the wide scan as
+/// before (a group's best cells by coarse score, the start its passes imply
+/// together; 2500, 300 and 80 groups), for comparison. With
+/// `OVERHEAD_NO_ANCHOR`, `OVERHEAD_NO_SUPPORT`, `OVERHEAD_KEEP_LEVEL_TONES`,
+/// `OVERHEAD_SOURCE_C` and `OVERHEAD_MAX_CURVE=3` as well, the matcher is
+/// the one before these were added.
+fn old_funnel() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("OVERHEAD_OLD_FUNNEL").is_some())
+}
+
 /// A match's share of the score from its curve score (before the
 /// detection's weight): nothing up to [`MIN_CURVE`], 1 at the stage-1 fit's
 /// level, capped at [`MAX_CURVE`].
 fn match_share(r: f64) -> f64 {
-    (r.min(MAX_CURVE) - MIN_CURVE).max(0.0) / (1.0 - MIN_CURVE)
+    (r.min(max_curve()) - MIN_CURVE).max(0.0) / (1.0 - MIN_CURVE)
+}
+
+/// [`MAX_CURVE`], or `OVERHEAD_MAX_CURVE` (a number, for comparison: 3 is the old cap).
+fn max_curve() -> f64 {
+    static CAP: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+    *CAP.get_or_init(|| std::env::var("OVERHEAD_MAX_CURVE").ok().and_then(|v| v.parse().ok()).filter(|v: &f64| *v > MIN_CURVE).unwrap_or(MAX_CURVE))
 }
 
 /// Speed (m/s) and slant range (m) of a segment at its closest approach to
@@ -426,7 +540,7 @@ struct Hyp {
     starts: Vec<f64>,
     score: f64,
     assign: Vec<Assign>,
-    /// Coarse match quality of each assignment (only when collecting the coarse map).
+    /// Coarse match quality of each assignment (empty for a hypothesis made after the coarse stage).
     q: Vec<f64>,
 }
 
@@ -971,7 +1085,6 @@ impl Search<'_> {
     /// part `k`), with part `k`'s start windows.
     fn evaluate_part(&self, recs: &[PassRec], wins: &[Window], grid: &Grid, k_part: usize, mask: u64) -> Option<Hyp> {
         let c = DEFAULT_C;
-        let collect_q = self.collect.coarse_cell_m.is_some();
         let (p0, p1) = self.part_span(k_part);
         // heard CPA of every pass, and per detection its compatible passes
         // sorted by heard time, so that each start candidate only looks at
@@ -1076,9 +1189,7 @@ impl Search<'_> {
                     used[j] = true;
                     q += qi;
                     assign.push(Assign { det: i, flight: recs[j].flight, t_cpa: recs[j].t_cpa });
-                    if collect_q {
-                        qs.push(qi);
-                    }
+                    qs.push(qi);
                     matched_s.push(recs[j].t_cpa + recs[j].d as f64 / c - w.tc);
                 }
             }
@@ -1278,7 +1389,21 @@ impl Search<'_> {
                 parts.push((0.0, 1.0, nearest, 1.0));
                 continue;
             }
-            let (r, m) = obs.score(det.flyby.f0, &k, stride);
+            // Stage 1 measured the line at one point: at `tc` it is at `f0`
+            // (a traced line: at its points). The modelled curve must pass
+            // through that point, so its rest frequency is the point's
+            // frequency over the model's Doppler factor at its time: `f0`
+            // itself only when the modelled closest approach falls exactly on
+            // `tc`. It does not when the aircraft slowed, turned or
+            // descended, because stage 1 fits a straight pass at constant
+            // speed and then puts `tc` (and with it `f0`) seconds off along
+            // the line.
+            let scale = match obs.anchor_point(det) {
+                Some((t, f)) if !no_anchor() => factor_at(seg, o, up, &sound, s, t).map_or(1.0, |k| f / k / det.flyby.f0),
+                _ => 1.0,
+            };
+            let (r, m) = obs.score(det.flyby.f0 * scale, &k, stride);
+            let m = m * scale;
             let r = r * timing;
             // a match only helps once its curve is clearly better than a chance alignment
             // capped: a detection whose stage-1 fit was poor has a tiny reference,
@@ -1543,6 +1668,126 @@ impl Search<'_> {
         out.iter().any(|s| s.is_finite()).then_some(out)
     }
 
+    /// The recording start one pass implies at a point (heard closest
+    /// approach minus the detection's `tc`) and how it changes with the place
+    /// (s per metre north and east), or `None` as in [`Self::implied_start`].
+    /// Moving the observer along the track moves the closest approach in
+    /// time by the distance over the speed; moving it towards the aircraft
+    /// shortens the sound's way.
+    fn pass_start(&self, lat: f64, lon: f64, c0: f64, a: &Assign) -> Option<(f64, f64, f64)> {
+        let seg = self.flights[a.flight as usize].segment_at(a.t_cpa)?;
+        let gh = self.dem.height(lat, lon);
+        let o = ecef(lat, lon, gh + self.cfg.mic_height);
+        let (east, north, up) = enu_axes(lat, lon);
+        let (tc, d) = flight::closest_approach(seg, o, a.t_cpa - 90.0, a.t_cpa + 90.0);
+        if !d.is_finite() || d > 2.0 * self.cfg.d_cap {
+            return None;
+        }
+        let (p, v, _) = seg.state(tc);
+        let r = sub(p, o);
+        let c = self.sound(c0).ray_c(dot(r, up));
+        let start = tc + d / c - self.dets[a.det].flyby.tc;
+        let v2 = dot(v, v).max(1.0);
+        let rn = norm(r).max(1.0);
+        let along = |axis: V3| dot(v, axis) / v2 - dot(r, axis) / rn / c;
+        Some((start, along(north), along(east)))
+    }
+
+    /// Starts worth trying at a point for an assignment: the one all its
+    /// passes imply together (as [`Self::implied_starts`]: a weighted median),
+    /// and the one each pass implies on its own. Stage 1 puts a fly-by's
+    /// closest approach seconds off when the aircraft slowed, turned or
+    /// descended, and such a fly-by drags the common start with it; with the
+    /// start taken from another fly-by, the modelled curve of the first still
+    /// falls where the real geometry puts it.
+    fn start_candidates(&self, lat: f64, lon: f64, c0: f64, assign: &[Assign]) -> Vec<Vec<f64>> {
+        // every pass's own start once; the joint one is their weighted median per part
+        let own: Vec<Option<f64>> = assign.iter().map(|a| self.pass_start(lat, lon, c0, a).map(|x| x.0)).collect();
+        let joint: Vec<f64> = (0..self.n_parts())
+            .map(|k| {
+                let mut v: Vec<(f64, f64)> = assign
+                    .iter()
+                    .zip(&own)
+                    .filter(|(a, _)| self.part_of_det(a.det) == k)
+                    .filter_map(|(a, s)| s.map(|s| (s, self.dets[a.det].weight_hint())))
+                    .collect();
+                v.sort_by(|a, b| a.0.total_cmp(&b.0));
+                let half = 0.5 * v.iter().map(|x| x.1).sum::<f64>();
+                let mut acc = 0.0;
+                for (s, w) in &v {
+                    acc += w;
+                    if acc >= half {
+                        return *s;
+                    }
+                }
+                v.last().map_or(f64::NAN, |x| x.0)
+            })
+            .collect();
+        if !joint.iter().any(|s| s.is_finite()) {
+            return Vec::new();
+        }
+        let mut out = vec![joint.clone()];
+        if assign.len() > 1 {
+            for (a, s) in assign.iter().zip(&own) {
+                let Some(s) = *s else { continue };
+                let mut v = joint.clone();
+                v[self.part_of_det(a.det)] = s;
+                if out.iter().all(|o| o.iter().zip(&v).any(|(x, y)| (x - y).abs() > 1.0 || x.is_finite() != y.is_finite())) {
+                    out.push(v);
+                }
+            }
+        }
+        out
+    }
+
+    /// Climb the curve score from a point and its starts (place and a common
+    /// shift of the starts; the speed of sound fixed): the score at the top,
+    /// and where. A lattice point lies up to half a step from where a
+    /// hypothesis fits best and shows a part of what it can score, which
+    /// part being a matter of where the lattice happens to fall; the top of
+    /// the climb can be compared between hypotheses.
+    #[allow(clippy::too_many_arguments)]
+    fn polish(&self, lat: f64, lon: f64, starts: &[f64], assign: &[Assign], stride: usize, step_m: f64, step_s: f64, iters: usize) -> (f64, f64, f64, Vec<f64>) {
+        let m_lon = M_PER_DEG_LAT * lat.to_radians().cos();
+        let at = |x: &[f64]| -> (f64, f64, Vec<f64>) {
+            (lat + x[1] / M_PER_DEG_LAT, lon + x[0] / m_lon, starts.iter().map(|s| s + x[2]).collect())
+        };
+        let obj = |x: &[f64]| -> f64 {
+            let (la, lo, s) = at(x);
+            if s.iter().enumerate().any(|(k, sk)| sk.is_finite() && !self.start_ok_in(k, *sk, 60.0)) {
+                return f64::NEG_INFINITY;
+            }
+            self.curve_scores_plain(la, lo, &s, 340.0, assign, stride) - self.start_wall(&s) - 0.01 * self.outside_region_m(la, lo)
+        };
+        let (x, v) = nelder_mead(|x| -obj(x), &[0.0, 0.0, 0.0], &[step_m, step_m, step_s], iters);
+        let (la, lo, s) = at(&x);
+        (-v, la, lo, s)
+    }
+
+    /// The best of [`Self::start_candidates`] at a point by the curve score
+    /// (every `stride`-th column), with that score; `None` when no start is
+    /// implied or none lies in a start window.
+    fn best_start(&self, lat: f64, lon: f64, c0: f64, assign: &[Assign], stride: usize) -> Option<(f64, Vec<f64>)> {
+        self.start_candidates(lat, lon, c0, assign)
+            .into_iter()
+            .filter(|s| !s.iter().enumerate().any(|(k, sk)| sk.is_finite() && !self.start_ok_in(k, *sk, 60.0)))
+            .map(|s| (self.curve_scores_plain(lat, lon, &s, c0, assign, stride) - self.start_wall(&s), s))
+            .max_by(|a, b| a.0.total_cmp(&b.0))
+    }
+
+    /// What starts outside their windows cost, as in the refinement's
+    /// objective: 0.05 per second beyond 5 s, summed over the parts. The
+    /// sieve and the quick check must see the same wall, or a seed is moved
+    /// to a start the refinement then pays for.
+    fn start_wall(&self, starts: &[f64]) -> f64 {
+        starts
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.is_finite())
+            .map(|(k, &s)| 0.05 * ((self.clamp_start_in(k, s) - s).abs() - 5.0).max(0.0))
+            .sum()
+    }
+
     fn implied_start(&self, lat: f64, lon: f64, c0: f64, assign: &[Assign]) -> Option<f64> {
         if assign.is_empty() {
             return None;
@@ -1595,11 +1840,15 @@ impl Search<'_> {
         let mut vals: Vec<(f64, f64, f64, Vec<f64>)> = pts
             .par_iter()
             .filter_map(|&(la, lo)| {
-                let s = self.implied_starts(la, lo, c0, assign)?;
-                if s.iter().enumerate().any(|(k, sk)| sk.is_finite() && !self.start_ok_in(k, *sk, 60.0)) {
-                    return None;
+                if old_funnel() {
+                    let s = self.implied_starts(la, lo, c0, assign)?;
+                    if s.iter().enumerate().any(|(k, sk)| sk.is_finite() && !self.start_ok_in(k, *sk, 60.0)) {
+                        return None;
+                    }
+                    return Some((self.curve_scores_plain(la, lo, &s, c0, assign, 4), la, lo, s));
                 }
-                Some((self.curve_scores_plain(la, lo, &s, c0, assign, 4), la, lo, s))
+                let (score, s) = self.best_start(la, lo, c0, assign, 4)?;
+                Some((score, la, lo, s))
             })
             .collect();
         vals.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -2010,8 +2259,33 @@ impl Search<'_> {
                 t.intersection(&self.region)
             })
             .collect();
+        // Sure detections: confident and not flagged as a possible ground
+        // vehicle (weight 1). When the recording has any, a hypothesis
+        // belongs to the group of its matches on those alone, and a match
+        // on a doubtful detection counts `DOUBTFUL_IN_RANK` of itself when
+        // groups are ranked for the sieve. A doubtful detection has wide
+        // speed and distance ranges that some flight fits almost anywhere
+        // near an airfield: keyed and ranked with those matches, the cells
+        // of one right pair of flights fall into many groups (one per set
+        // of chance matches added to it), each outranked by groups that are
+        // chance matches only. The doubtful matches stay in the hypothesis
+        // and are scored with it.
+        let sure: Vec<bool> = {
+            let own: Vec<bool> = self.dets.iter().map(|d| d.weight_hint() >= 1.0 - 1e-9).collect();
+            if old_funnel() || !own.iter().any(|s| *s) { vec![true; own.len()] } else { own }
+        };
         let key_of = |h: &Hyp| -> Vec<(usize, u32, i64)> {
-            h.assign.iter().map(|a| (a.det, a.flight, (a.t_cpa / 60.0).round() as i64)).collect()
+            let key = |a: &Assign| (a.det, a.flight, (a.t_cpa / 60.0).round() as i64);
+            if h.assign.iter().any(|a| sure[a.det]) {
+                h.assign.iter().filter(|a| sure[a.det]).map(key).collect()
+            } else {
+                h.assign.iter().map(key).collect()
+            }
+        };
+        // the coarse score with the doubtful matches discounted
+        let rank_of = |h: &Hyp| -> f64 {
+            let doubtful: f64 = h.assign.iter().zip(&h.q).filter(|(a, _)| !sure[a.det]).map(|(_, q)| *q).sum();
+            h.score - (1.0 - DOUBTFUL_IN_RANK) * doubtful
         };
         let mut truth_key: Option<Vec<(usize, u32, i64)>> = None;
         let mut truth_seed: Option<Hyp> = None;
@@ -2024,7 +2298,9 @@ impl Search<'_> {
         }
         stats.coarse_terrain = coarse.is_some();
         // groups: assignment key -> best hypotheses
-        let mut groups: HashMap<Vec<(usize, u32, i64)>, Vec<Hyp>> = HashMap::new();
+        // (with [lat min, lat max, lon min, lon max] of the cells the group was found in)
+        #[allow(clippy::type_complexity)]
+        let mut groups: HashMap<Vec<(usize, u32, i64)>, (Vec<Hyp>, [f64; 4])> = HashMap::new();
         for tile in &tiles {
             let reach = tile.expand(d_max + 2000.0);
             let fl: Vec<usize> = (0..self.flights.len()).filter(|&i| extents[i].intersects(&reach)).collect();
@@ -2111,11 +2387,12 @@ impl Search<'_> {
                 }
             }
             for h in hyps {
-                let key = key_of(&h);
-                let g = groups.entry(key).or_default();
+                let (g, e) = groups.entry(key_of(&h)).or_insert_with(|| (Vec::new(), [h.lat, h.lat, h.lon, h.lon]));
+                // the area the group was found in (the sieve scans it)
+                *e = [e[0].min(h.lat), e[1].max(h.lat), e[2].min(h.lon), e[3].max(h.lon)];
                 g.push(h);
                 if g.len() > 12 {
-                    g.sort_by(|a, b| b.score.total_cmp(&a.score));
+                    g.sort_by(|a, b| rank_of(b).total_cmp(&rank_of(a)));
                     g.truncate(6);
                 }
             }
@@ -2124,26 +2401,152 @@ impl Search<'_> {
         laps.lap("groups");
         stats.groups = groups.len();
         // best few cells of the best groups
-        let mut group_list: Vec<(Vec<(usize, u32, i64)>, Vec<Hyp>)> = groups
+        #[allow(clippy::type_complexity)]
+        let mut group_list: Vec<(Vec<(usize, u32, i64)>, Vec<Hyp>, [f64; 4])> = groups
             .into_iter()
-            .map(|(k, mut g)| {
-                g.sort_by(|a, b| b.score.total_cmp(&a.score));
+            .map(|(k, (mut g, area))| {
+                g.sort_by(|a, b| rank_of(b).total_cmp(&rank_of(a)));
                 g.truncate(3);
-                (k, g)
+                (k, g, area)
             })
             .collect();
-        group_list.sort_by(|a, b| b.1[0].score.total_cmp(&a.1[0].score));
+        group_list.sort_by(|a, b| rank_of(&b.1[0]).total_cmp(&rank_of(&a.1[0])));
         if let (Some(t), Some(k)) = (stats.truth_hypothesis.as_mut(), &truth_key) {
             t.group_rank = group_list.iter().position(|g| &g.0 == k).map(|r| r + 1);
         }
-        let mut group_list: Vec<Vec<Hyp>> = group_list.into_iter().map(|g| g.1).collect();
-        // first sieve: the curve score at each group's best cell with the start
-        // its passes imply there (cheap, so far more groups than the coarse
-        // ranking alone could afford)
-        group_list.truncate(if wins.len() <= 1 { cfg.sieve * 2 } else { cfg.sieve });
+        let mut group_list: Vec<(Vec<Hyp>, [f64; 4])> = group_list.into_iter().map(|(_, g, area)| (g, area)).collect();
+        // `OVERHEAD_DEBUG_GROUP=hex,hex` (with --truth): follow the group matched
+        // to exactly these aircraft through the sieve and the quick check
+        let debug_hexes: Vec<String> =
+            std::env::var("OVERHEAD_DEBUG_GROUP").map(|v| v.split(',').map(|h| h.trim().to_lowercase()).collect()).unwrap_or_default();
+        let debug_group = |assign: &[Assign]| -> bool {
+            !debug_hexes.is_empty()
+                && assign.iter().filter(|a| sure[a.det]).count() == debug_hexes.len()
+                && debug_hexes.iter().all(|h| assign.iter().any(|a| sure[a.det] && self.flights[a.flight as usize].hex.eq_ignore_ascii_case(h)))
+        };
+        // (a traced line is compared with the polyline through the curve's
+        // samples, which must then be close: every fourth column for those)
+        let traced = self.observed.iter().any(|o| matches!(o, Observed::Trace { .. }));
+        let (scan_stride, climb_stride) = if traced { (4, 4) } else { (SIEVE_SCAN_STRIDE, SIEVE_STRIDE) };
+        // first sieve: a cheap curve score over each group's area (cheap, so
+        // far more groups than the coarse ranking alone could afford)
+        // (the old funnel with the numbers it had)
+        let (n_sieve, n_quick) = if old_funnel() { (OLD_SIEVE, OLD_REFINE) } else { (cfg.sieve, cfg.refine) };
+        group_list.truncate(if wins.len() <= 1 { n_sieve * 2 } else { n_sieve });
         let mut sieve: Vec<(f64, Vec<Hyp>)> = group_list
             .into_par_iter()
-            .map(|g| {
+            .map(|(mut g, area)| {
+                if !old_funnel() {
+                    // The group's best cell is the best by stage 1's speed,
+                    // distance and closest-approach times; where those are off
+                    // (an aircraft that slowed or turned) the curves fit a
+                    // kilometre or two from it. So the area the group was
+                    // found in is scanned, every point with the starts its
+                    // passes imply, and the score is climbed from the best
+                    // point: where that ends is the group's seed.
+                    let coarse = g[0].score;
+                    let mut best = self.curve_scores_plain(g[0].lat, g[0].lon, &g[0].starts, 340.0, &g[0].assign, scan_stride) - self.start_wall(&g[0].starts);
+                    let (pts, step) = sieve_points(g[0].lat, g[0].lon, area);
+                    // Two fly-bys fit at once only where their passes are
+                    // heard the right time apart: a strip a hundred metres or
+                    // so across (a second of that time difference is 60 m or
+                    // more of ground), which a lattice of several hundred
+                    // metres mostly steps over, and nothing on either side
+                    // points to it. So where the group's two heaviest sure
+                    // matches are heard within `pair_tol` of what stage 1 measured,
+                    // a lattice point is taken as points `SIEVE_ACROSS_M` apart
+                    // along the direction in which that time difference
+                    // changes; elsewhere in the area the two cannot fit
+                    // together and the point is left out.
+                    // (the two heaviest sure matches; of equally heavy ones, those
+                    // whose closest-approach time stage 1 measured most narrowly)
+                    let tc_width = |a: &Assign| (self.dets[a.det].ranges.tc.1 - self.dets[a.det].ranges.tc.0).abs();
+                    let pair: Option<[Assign; 2]> = {
+                        // (sure matches only: a doubtful one is as likely a chance
+                        // match, and the place need not be where it fits)
+                        let mut by_weight: Vec<&Assign> = g[0].assign.iter().filter(|a| sure[a.det]).collect();
+                        by_weight.sort_by(|a, b| {
+                            self.dets[b.det].weight_hint().total_cmp(&self.dets[a.det].weight_hint()).then(tc_width(a).total_cmp(&tc_width(b)))
+                        });
+                        // (one start for both: the same part of the recording)
+                        match by_weight.as_slice() {
+                            [a, b, ..] if self.part_of_det(a.det) == self.part_of_det(b.det) => Some([**a, **b]),
+                            _ => None,
+                        }
+                    };
+                    // how far the time between the two may be from stage 1's
+                    let pair_tol = pair.as_ref().map_or(0.0, |[a, b]| SIEVE_PAIR_S + 0.5 * (tc_width(a) + tc_width(b)));
+                    let m_lon = M_PER_DEG_LAT * g[0].lat.to_radians().cos();
+                    let mut n_pts = 0usize;
+                    let mut moved: Option<(f64, f64, Vec<f64>)> = None;
+                    let mut sub: Vec<(f64, f64)> = Vec::new();
+                    for (la, lo) in pts {
+                        sub.clear();
+                        sub.push((la, lo));
+                        if let Some([a, b]) = &pair {
+                            // the time between the two passes here against stage 1's,
+                            // and how it changes with the place (s/m north and east)
+                            let (Some(sa), Some(sb)) = (self.pass_start(la, lo, 340.0, a), self.pass_start(la, lo, 340.0, b)) else { continue };
+                            let (d0, gn, ge) = (sa.0 - sb.0, sa.1 - sb.1, sa.2 - sb.2);
+                            let norm = gn.hypot(ge);
+                            // the strip is beyond reach of this lattice point's cell
+                            if d0.abs() > pair_tol + 0.71 * step * norm {
+                                continue;
+                            }
+                            if norm * SIEVE_ACROSS_M > SIEVE_ACROSS_S {
+                                sub.clear();
+                                let n = (step / SIEVE_ACROSS_M).round().max(1.0) as i32;
+                                for i in 0..n {
+                                    let t = (i as f64 - 0.5 * (n - 1) as f64) * step / n as f64;
+                                    sub.push((la + t * gn / norm / M_PER_DEG_LAT, lo + t * ge / norm / m_lon));
+                                }
+                            }
+                        }
+                        for &(la, lo) in &sub {
+                            if !self.region.contains(la, lo) {
+                                continue;
+                            }
+                            n_pts += 1;
+                            if let Some((score, starts)) = self.best_start(la, lo, 340.0, &g[0].assign, scan_stride)
+                                && score > best
+                            {
+                                best = score;
+                                moved = Some((la, lo, starts));
+                            }
+                        }
+                    }
+                    if debug_group(&g[0].assign)
+                        && let Some((tl, tn, _)) = self.truth
+                    {
+                        let (la, lo) = moved.as_ref().map_or((g[0].lat, g[0].lon), |m| (m.0, m.1));
+                        eprintln!(
+                            "[group] sieve: {n_pts} points over {:.1} x {:.1} km; best {best:.2} at {:.0} m from the truth (coarse cell {:.0} m)",
+                            (area[1] - area[0]) * M_PER_DEG_LAT / 1000.0,
+                            (area[3] - area[2]) * M_PER_DEG_LAT * g[0].lat.to_radians().cos() / 1000.0,
+                            geo::ground_distance(la, lo, tl, tn),
+                            geo::ground_distance(g[0].lat, g[0].lon, tl, tn)
+                        );
+                    }
+                    if let Some((la, lo, starts)) = moved {
+                        (g[0].lat, g[0].lon, g[0].starts) = (la, lo, starts);
+                    }
+                    if best > 0.0 {
+                        // (the scan's score is at its own, coarser stride)
+                        best = self.curve_scores_plain(g[0].lat, g[0].lon, &g[0].starts, 340.0, &g[0].assign, climb_stride) - self.start_wall(&g[0].starts);
+                        let (score, la, lo, starts) =
+                            self.polish(g[0].lat, g[0].lon, &g[0].starts, &g[0].assign, climb_stride, SIEVE_POLISH_M, SIEVE_POLISH_S, SIEVE_POLISH_STEPS);
+                        if score > best {
+                            best = score;
+                            (g[0].lat, g[0].lon, g[0].starts) = (la, lo, starts);
+                        }
+                    }
+                    if debug_group(&g[0].assign)
+                        && let Some((tl, tn, _)) = self.truth
+                    {
+                        eprintln!("[group] sieve: after the climb {best:.2} at {:.0} m from the truth", geo::ground_distance(g[0].lat, g[0].lon, tl, tn));
+                    }
+                    return (best + 1e-3 * coarse, g);
+                }
                 let h = &g[0];
                 let mut best = f64::NEG_INFINITY;
                 for c0 in [334.0, 346.0] {
@@ -2164,17 +2567,43 @@ impl Search<'_> {
             .collect();
         laps.lap("sieve");
         sieve.sort_by(|a, b| b.0.total_cmp(&a.0));
+        if !debug_hexes.is_empty() {
+            for (rank, (score, g)) in sieve.iter().enumerate().filter(|(_, x)| debug_group(&x.1[0].assign)) {
+                let cut = (if wins.len() <= 1 { n_quick * 4 } else { n_quick }).clamp(1, sieve.len());
+                eprintln!("[group] sieve rank {} of {} (score {score:.2}; rank 1 has {:.2}, rank {cut} has {:.2})", rank + 1, sieve.len(), sieve[0].0, sieve[cut - 1].0);
+                let _ = g;
+            }
+        }
         if let (Some(t), Some(k)) = (stats.truth_hypothesis.as_mut(), &truth_key) {
             t.sieve_rank = sieve.iter().position(|g| &key_of(&g.1[0]) == k).map(|r| r + 1);
         }
-        let n_refine = if wins.len() <= 1 { cfg.refine * 4 } else { cfg.refine };
+        let n_refine = if wins.len() <= 1 { n_quick * 4 } else { n_quick };
         sieve.truncate(n_refine);
         let group_list: Vec<Vec<Hyp>> = sieve.into_iter().map(|x| x.1).collect();
-        let seeds: Vec<Hyp> = group_list.into_iter().flat_map(|g| g.into_iter().take(2)).collect();
-        // cheap curve score at the seed (small start/c0 scan) decides which seeds get the full refinement
+        // (the sieve has moved a group's first cell to the best place within
+        // its reach: one seed per group)
+        let per_group = if old_funnel() { 2 } else { 1 };
+        let seeds: Vec<Hyp> = group_list.into_iter().flat_map(|g| g.into_iter().take(per_group)).collect();
+        // a finer look at each seed decides which seeds get the full refinement
         let mut quick: Vec<(f64, Hyp)> = seeds
             .into_par_iter()
-            .map(|h| {
+            .map(|mut h| {
+                if !old_funnel() {
+                    // The sieve left every seed where its coarse climb (every
+                    // eighth column) ended. A second climb from there at twice
+                    // the resolution says better what the full refinement can
+                    // make of the seed, for the choice of the seeds refined.
+                    let (score, lat, lon, starts) = self.polish(h.lat, h.lon, &h.starts, &h.assign, 4, QUICK_POLISH_M, QUICK_POLISH_S, QUICK_POLISH_STEPS);
+                    if debug_group(&h.assign)
+                        && let Some((tl, tn, _)) = self.truth
+                    {
+                        eprintln!("[group] quick: {score:.2} at {:.0} m from the truth", geo::ground_distance(lat, lon, tl, tn));
+                    }
+                    if score.is_finite() {
+                        (h.lat, h.lon, h.starts) = (lat, lon, starts);
+                    }
+                    return (score, h);
+                }
                 let mut best = f64::NEG_INFINITY;
                 for ds in [-6.0, -3.0, 0.0, 3.0, 6.0] {
                     for c0 in [334.0, 343.0] {
@@ -2187,7 +2616,15 @@ impl Search<'_> {
             .collect();
         laps.lap("quick");
         quick.sort_by(|a, b| b.0.total_cmp(&a.0));
-        quick.truncate(if wins.len() <= 1 { cfg.refine_full * 2 } else { cfg.refine_full });
+        if !debug_hexes.is_empty() {
+            for (rank, (score, _)) in quick.iter().enumerate().filter(|(_, x)| debug_group(&x.1.assign)) {
+                let n_full = if old_funnel() { OLD_REFINE_FULL } else { cfg.refine_full };
+                let cut = (if wins.len() <= 1 { n_full * 2 } else { n_full }).clamp(1, quick.len());
+                eprintln!("[group] quick rank {} of {} (score {score:.2}; rank 1 has {:.2}, rank {cut} has {:.2})", rank + 1, quick.len(), quick[0].0, quick[cut - 1].0);
+            }
+        }
+        let n_full = if old_funnel() { OLD_REFINE_FULL } else { cfg.refine_full };
+        quick.truncate(if wins.len() <= 1 { n_full * 2 } else { n_full });
         let seeds: Vec<Hyp> = quick.into_iter().map(|q| q.1).collect();
         stats.refined = seeds.len();
         if let (Some(t), Some(k)) = (stats.truth_hypothesis.as_mut(), &truth_key) {
@@ -2892,6 +3329,29 @@ mod tests {
             trace: None,
             origin: Default::default(),
         }
+    }
+
+    /// The sieve's scan covers the group's area, no finer than its least
+    /// step, and stays within its radius of the best cell.
+    #[test]
+    fn sieve_points_cover_the_area_within_the_radius() {
+        let (lat, lon): (f64, f64) = (52.0, 21.0);
+        let m_lon = M_PER_DEG_LAT * lat.to_radians().cos();
+        // 2 km x 1 km around the best cell
+        let small = [lat - 1000.0 / M_PER_DEG_LAT, lat + 1000.0 / M_PER_DEG_LAT, lon - 500.0 / m_lon, lon + 500.0 / m_lon];
+        let (pts, step) = sieve_points(lat, lon, small);
+        assert!((step - SIEVE_STEP_M).abs() < 1e-9);
+        assert!(pts.len() >= 15 && pts.len() <= 24, "{} points", pts.len());
+        assert!(pts.iter().all(|p| p.0 >= small[0] - 1e-9 && p.0 <= small[1] + 1e-9 && p.1 >= small[2] - 1e-9 && p.1 <= small[3] + 1e-9));
+        // 40 km x 40 km: cut to the radius, about SIEVE_POINTS points
+        let big = [lat - 0.18, lat + 0.18, lon - 0.3, lon + 0.3];
+        let (pts, step) = sieve_points(lat, lon, big);
+        assert!(step > SIEVE_STEP_M);
+        assert!((pts.len() as f64) < 1.3 * SIEVE_POINTS + 25.0, "{} points", pts.len());
+        let far = pts.iter().map(|p| ((p.0 - lat) * M_PER_DEG_LAT).abs().max(((p.1 - lon) * m_lon).abs())).fold(0.0, f64::max);
+        assert!(far <= SIEVE_RADIUS_M + 1.0, "a point {far} m off");
+        // a single cell
+        assert_eq!(sieve_points(lat, lon, [lat, lat, lon, lon]).0.len(), 1);
     }
 
     #[test]

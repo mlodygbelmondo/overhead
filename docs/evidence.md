@@ -13,6 +13,189 @@ What `locate` was told (all taken from each recording's `meta.json`, i.e. what t
 
 Raw outputs: `~/doppler-data/evidence/runs-match/<id>-<mode>.{json,log,time}` (first report: `~/doppler-data/evidence/runs/`). Scripts: `scripts/evidence/` (`run_locate.py` runs a mode, `analyze.py` scores it against the truth, `figure.py` draws the figures, `make_doc.py` writes this page from `notes.json`).
 
+## The reference video's own recording (2026-11-10)
+
+Until now the pipeline had never been run end to end on the recording the
+[reference video](https://www.youtube.com/watch?v=UytYrhYLOKI) itself
+locates (its [one-hour raw audio](https://youtu.be/4CxVxuMVkMc); only stage 1
+had been checked on it). It fails there, and the reasons are defects of the
+matcher, not of the data. This section is the record of that, of the
+changes made on branch `fix/level-tones-and-scoring`, and of what they do
+to the other test recordings. Nothing here is merged into main.
+
+**Ground truth.** From the video's own frames and adsb.lol for 2026-09-08:
+
+- Place: about 40.8779, -73.5319 (Oyster Bay, Long Island; the video's best
+  grid point, the camera stands on the bank nearby and its exact position is
+  not given). Day: 8 September 2026. The published file is the second hour
+  of a longer original and starts at about 20:17:30 UTC.
+- Fly-by 1 (2154 s into the file): Pilatus PC-12 N22NY (`a1dfeb`, CST1219),
+  5.5 km high, 137 m/s, 6.2 km slant, heard at 20:53:26 UTC.
+- Fly-by 2 (3070 s): King Air 350 N93CQ (`ace391`, EGE93), 1.1 km high,
+  3.5 km slant, heard at 21:08:49 UTC. It slows from 227 to 195 kt during
+  its closest approach and then descends, so its curve is not the curve of
+  a straight pass at constant speed.
+- The video measured both curves by hand and searched the continental US
+  with only the day.
+
+**Main (ac35463) on this recording.** `locate --day 2026-09-08`, region the
+New York area (40-42 N, 75-71.5 W; 2112 candidate flights): #1 is in
+Brooklyn, 47 km from the true place (N22NY, matched to the right fly-by but
+at the wrong point of its track, with a chance helicopter); the true place
+is not among the ten candidates. With the region cut to 11 km around the
+true place: no hypothesis holds both flights. With the start also pinned to
+40 s: N22NY is matched, N93CQ never is.
+
+**Why.** Each cause was isolated on this recording:
+
+1. *The stage-1 fit of fly-by 2 is not the aircraft's curve.* A straight
+   pass at constant speed cannot follow an aircraft that slows: the fit
+   says 82 m/s (range 76-107), 1.7 km, closest approach at 3069.6 s and a
+   rest frequency of 138.2 Hz, against 117 falling to 100 m/s, 3.5 km,
+   3079 s and 125.9 Hz. The fit's flat approach end also lies on a 181 Hz machine tone
+   that sounds until 3000 s.
+2. *The rest frequency was fixed to stage 1's.* The matcher swept `f0` by
+   ±1.2 %; the real flight needs -8.9 %. So the right flight's curve could
+   not be laid on its own line.
+3. *The scale was the stage-1 fit's brightness over the whole map* (246 s
+   for a line seen for 73 s): about 64 % of it came from outside the
+   aircraft's line, most of it from the machine tone. Against that, the
+   right flight reached 0.2-0.4, under the 0.45 a match needs.
+4. *The Doppler factor used the speed of sound at the aircraft.* By Snell's
+   law it is the mean along the path that goes with the straight-line
+   direction (technical.md, method step 7). For the PC-12 at 5.5 km the
+   swing came out 3.3 % too large; the refinement drove the ground speed of
+   sound to its limit (354.8 m/s) to undo it. With the mean: 347.1 m/s, and
+   the right pair scores 2.39 instead of 2.03 at the true place.
+5. *The search never looked at the right place.* By coarse score the right
+   pair of flights was group 4084 of 85 817 (2500 went on), and the group's
+   best cell, picked by stage 1's distance (1.7 km) and closest-approach
+   time, lay 1.6 km from the true place, where only one of its two curves
+   fits.
+6. *A poor detection counted most.* A faint line whose stage-1 fit covers a
+   tenth of it has a tiny reference, so almost any curve along the real line
+   scores 1.9-3.1 on it, and with the cap at 3.0 that one match counted as
+   up to 4.6.
+
+**Changes** (all in the matcher; stage 1 is unchanged; technical.md, method
+steps 6, 7 and 9): the rest frequency of a modelled curve is taken through
+the point stage 1 measured (`f0` over the model's Doppler factor at `tc`);
+level tones are taken out of the maps candidates are scored on; a detection
+is scored only where its line is seen, and 20 s beyond; the Doppler factor
+uses the mean speed of sound along the path; the sieve scans the area each
+group of hypotheses was found in instead of scoring one cell, finely across
+the strip where two fly-bys can fit together, with the start every pass
+implies on its own as well as the joint one, ranks groups by their matches
+on sure detections, and refines 120 instead of 80; the cap on one
+detection's curve score is 1.5. Each has a switch that turns it off for
+comparison (technical.md, "Comparing with the matcher before").
+
+**After, on this recording** (audio in, stage 1 and matcher automatic, only
+the day given):
+
+| region | candidate flights | #1 | from the video's point | score, margin | matched |
+|---|---|---|---|---|---|
+| New York area, 40-42 N, 75-71.5 W | 2112 | 40.87667, -73.52573 | 540 m | 2.41, 0.06 | N22NY (curve 1.09), N93CQ (1.22) |
+| North-east US, 38-45 N, 80-69 W (780 x 930 km) | 4928 | 40.87668, -73.52573 | 540 m | 2.41, 0.06 | the same |
+
+The start comes out as 20:17:29.8 UTC. The margin is small: the best other
+place scores 2.25-2.28 (three chance matches; the margin is the smaller of
+the gaps with and without the soft evidence and silence terms), so the tool
+reports the answer as the best of several, not as certain. The whole command (stage 1
+included) takes 2 min 7 s for the New York area and 4 min 23 s for the
+north-east; in the New York search the new sieve takes 30 s and the quick
+check 2 s, on top of a coarse stage of about 65 s that is the same in both
+versions.
+
+**Real test set** (the 14 recordings on disk, 49 runs: exact / stated start
+/ hours / day; the same stage-1 detections for both, so the differences are
+the matcher's; `scripts/evidence/validate.sh` and `compare.py`, raw outputs
+in `~/overhead-data/val/runs-base` and `runs-final`). "Right" = #1 within
+2 km; "confident" = margin at least 1.
+
+| | main ac35463 | branch |
+|---|---|---|
+| within 500 m | 9 | 6 |
+| within 2 km | 13 | 9 |
+| confident and right | 4 | 4 |
+| confident and wrong | 0 | 0 |
+| highest margin on a wrong answer | 0.22 (River Amer, day) | 0.09 (Vlissingen, hours) |
+| `locate` wall time total / median / worst | 943 / 12.6 / 98.5 s | 1515 / 20.4 / 140.1 s |
+
+Every run that is right in either version:
+
+| recording | mode | main | branch |
+|---|---|---|---|
+| Oosterschelde (fs794275) | exact start | 41 m ✅, margin 2.62 | 66 m ✅, 3.40 |
+| Oosterschelde | stated start / hours / day | 41 m ✅, 2.60-2.66 | 65 m ✅, 2.75 |
+| Berlin (aporee 66516) | exact start | 495 m ✅, 0.83 | 491 m ✅, 0.84 |
+| Berlin | stated start | 495 m ✅, 0.18 | 491 m ✅, 0.11 |
+| River Amer (fs801327) | exact start | 717 m ≈, 0.21 | 659 m ≈, -0.02 |
+| River Amer | stated start | 803 m ≈, 0.34 | 804 m ≈, 0.03 |
+| Kampina 12:43 (fs858591) | exact start | 6.9 km, 0.02 | 974 m ≈, 0.02 |
+| Vlissingen (fs864478) | exact start | 29 m ✅, -0.07 | 33.7 km, -0.04 |
+| Vlissingen | stated start | 30 m ✅, -0.07 | 28.9 km, 0.01 |
+| Altenthann (fs847111) | hours / day | 1031 m ≈, 0.03 | 128.8 km, 0.01 |
+| Kampina 11:40 (fs858688) | exact start | 48 m ✅, 0.01 | 48.1 km, 0.05 |
+
+What this says and does not say:
+
+- The answers the tool was sure of, or nearly, are kept (Oosterschelde in
+  every mode, Berlin, River Amer with a start), Oosterschelde with a higher
+  margin and, with the exact start, a fitted speed of sound of 343.6 m/s
+  instead of 348.7.
+- Five answers that were right on main are lost, and one is gained (Kampina
+  12:43 with the exact start, also with a margin near zero). All five had a
+  margin of 0.03 or less on main (two were negative): another place fitted
+  as well, and which of the two came first was decided by details. Three
+  are single fly-bys. Vlissingen with the exact start is right in an
+  earlier build of this branch (26 m, margin 0.16) and wrong in the last:
+  there the right place is found, but the refinement ends on a start 4 s
+  off that holds two of its three flights (0.83 against 1.14).
+- Main's numbers are not a neutral baseline for these five: the changes
+  that made main were accepted on this same set under the rule that no
+  right answer may be lost, which keeps answers that are right by a
+  hair. By the count the branch is worse on this set, and that is what
+  would be seen by someone running these recordings.
+- `locate` takes about 1.6 times as long on searches of this size (a province):
+  the sieve scans the area of up to 10 000 groups (20 000 with a single
+  fly-by), which is every group in most of these searches.
+
+**Synthetic end to end** (rendered now from real ADS-B of 2026-08-15, as in
+technical.md; the same audio and detections for both versions; results in
+`~/overhead-data/val/e2e`):
+
+| run | main: within 500 m | branch: within 500 m | main: confident and right | branch |
+|---|---|---|---|---|
+| Warsaw, start known (6 cases) | 2 | 5 | 1 | 3 |
+| Warsaw, day only (6) | 1 | 3 | 1 | 3 |
+| Rhein-Main, 4-hour window (4) | 3 | 2 | 1 | 0 |
+| all (16) | 6 | 10 | 3 | 6 |
+
+No confident wrong answer in either. On Warsaw with the start known, main
+is 0.8-5.6 km off in four cases with the start 13-20 s out (the right
+flights at the wrong point of their tracks); the branch is within 40-491 m
+in five and 757 m off in the sixth. Lost: Rhein-Main case 00 (262 m,
+margin 0.46 on main; 80 km on the branch, where chance matches on one
+poorly fitted detection score 1.5 and win). Rhein-Main case 01 keeps its
+place (33 m) with its margin just under 1 (1.10 to 0.98), and case 02
+keeps its place (114 m) with its margin down from 0.69 to 0.03.
+
+The rendering uses one speed of sound at every height, so these cases
+cannot judge the change to the Doppler factor, which moves the matcher
+towards the renderer. With the old rule (`OVERHEAD_SOURCE_C=1`) the branch
+locates the same Warsaw cases (5 of 6 with the start, 3 of 6 with the day)
+with lower margins (1.14 and 1.11 instead of 1.34 and 1.94 on cases 02
+and 03 with the start): the gain on this set comes from the other changes.
+
+**Not done.** The detector benchmark was not affected (stage 1 is
+unchanged; taking level tones out of the stage-1 fits as well was tried
+and dropped: on four benchmark sets it lost one of 49 detections and added
+false positives). Moerdijk (fs749484) was not re-run: its audio is no
+longer on disk. The 33-case synthetic set of the earlier sections was not
+re-run, only the 16 cases above. The continental-US search of the video was
+not completed here. README's figures describe main.
+
 ## Final run (main 3b3464b, 2026-11-03)
 
 Everything from scratch with the merged code: stage 1 on the audio, then `overhead-adsb locate` in every input mode, region = province/state + country. Raw outputs: `~/doppler-data/final/runs`, script `~/doppler-data/final/run.sh`. ✅ = within 500 m, ≈ = within 2 km. Margin ≥ 1 means the tool calls the answer reliable. The three long recordings come from the section "Long recordings with several fly-bys" in [testset.md](testset.md).
